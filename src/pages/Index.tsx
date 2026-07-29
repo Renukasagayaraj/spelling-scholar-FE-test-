@@ -1,8 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Loader2, Send, ArrowRight, Volume2, Volume1, VolumeX, Sparkles, Play, StopCircle } from "lucide-react";
-import { downloadSessionReport } from "@/lib/sessionReport";
+import { Loader2, Send, ArrowRight, Volume2, Volume1, VolumeX, Sparkles } from "lucide-react";
 import confetti from "canvas-confetti";
 import { useCheer } from "@/hooks/use-cheer";
 import { LevelSelector } from "@/components/LevelSelector";
@@ -16,7 +15,6 @@ import { ForeignOriginPanel } from "@/components/ForeignOriginPanel";
 import { ChannelsDashboard, type ChannelSelection } from "@/components/ChannelsDashboard";
 import { RewardsStrip } from "@/components/RewardsStrip";
 import { LevelUpFlash } from "@/components/LevelUpFlash";
-import { WordSearchSidebar } from "@/components/WordSearchSidebar";
 import { DinoDecor } from "@/components/DinoDecor";
 import { useRewards } from "@/hooks/use-rewards";
 import { ArrowLeft, GraduationCap, List as ListIcon, Globe } from "lucide-react";
@@ -49,19 +47,14 @@ import type {
   PracticeSessionRecord,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { AuthMenu } from "@/components/AuthMenu";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { type HistoryEntry } from "@/components/SessionHistoryPanel";
 import { SessionHistorySidebar } from "@/components/SessionHistorySidebar";
-import beePng from "@/assets/bee.png";
 import { Header } from "@/components/Header";
 import { useAuth } from "@/hooks/use-auth";
 import { PaymentDialog } from "@/components/PaymentDialog";
 import { AuthDialog } from "@/components/AuthDialog";
 import { ActiveSessionConflictDialog } from "@/components/ActiveSessionConflictDialog";
 import { queueMockBeeResume, takePracticeResumeMode } from "@/lib/sessionResume";
-
-const STANDARD_FREE_WORD_LIMIT = 30;
 
 const DEFAULT_PROFILE = {
   childId: "c1",
@@ -159,7 +152,9 @@ const historyEntryFromAttempt = (att: DbWordAttempt): HistoryEntry => {
 
 export default function Index() {
   const navigate = useNavigate();
-  const [theme, setTheme] = useState<ThemeKey>("default");
+  const [theme, setTheme] = useState<ThemeKey>(() => {
+    return (localStorage.getItem("spelling-coach-theme") as ThemeKey) || "default";
+  });
   const { soundEnabled, toggleSound, playCheer } = useCheer();
   const rewards = useRewards();
   const { user, subscribed, profile, updateProfile, loading: authLoading } = useAuth();
@@ -167,7 +162,6 @@ export default function Index() {
   const hasInitializedRef = useRef(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
-  const [standardWordsUsed, setStandardWordsUsed] = useState(0);
   const [level, setLevel] = useState(0);
   const [word, setWord] = useState<WordData | null>(null);
   const [attempt, setAttempt] = useState("");
@@ -210,9 +204,6 @@ export default function Index() {
   const [selectedForeignOrigin, setSelectedForeignOrigin] = useState<ForeignOriginSummary | null>(null);
   const [selectedForeignOriginDetails, setSelectedForeignOriginDetails] = useState<ForeignOriginDetail | null>(null);
   const [foreignPracticeActive, setForeignPracticeActive] = useState(false);
-
-  // Standard practice session (start/stop with report)
-  const [standardSessionActive, setStandardSessionActive] = useState(false);
 
   // Session word history (per practice session)
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -343,6 +334,7 @@ export default function Index() {
       return {
         mode: "custom",
         customListId,
+        customListName: selectedCustomList?.id === customListId ? selectedCustomList.name : undefined,
         forceCloseCurrent,
       };
     }
@@ -769,6 +761,7 @@ export default function Index() {
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme === "default" ? "" : theme);
+    localStorage.setItem("spelling-coach-theme", theme);
   }, [theme]);
 
   // Sync theme setting from database profile when loaded
@@ -785,18 +778,11 @@ export default function Index() {
         .then((stats) => {
           if (stats) {
             rewards.syncWithDatabase(stats);
-            setStandardWordsUsed(
-              stats
-                .filter((stat) => stat.mode === "standard" || stat.mode.startsWith("standard_level_"))
-                .reduce((total, stat) => total + stat.total_attempts, 0),
-            );
           }
         })
         .catch((err) => {
           console.error("Failed to sync rewards statistics with backend:", err);
         });
-    } else {
-      setStandardWordsUsed(0);
     }
   }, [user, rewards.syncWithDatabase]);
 
@@ -876,51 +862,15 @@ export default function Index() {
     }
   }, []);
 
-  const openUpgradeFlow = () => {
-    if (!user) {
-      setAuthOpen(true);
-      return;
-    }
-    setPaymentOpen(true);
-  };
-
-  const standardLimitReached =
-    practiceMode === "standard" && !subscribed && standardWordsUsed >= STANDARD_FREE_WORD_LIMIT;
-
   const handleLevelChange = (lvl: number) => {
-    if (standardLimitReached) {
-      openUpgradeFlow();
-      return;
-    }
     setLevel(lvl);
-  };
-
-  const handleStartStandardSession = async () => {
-    if (!level) return;
-
-    const started = await startSession(`standard_level_${level}`);
-
-    if (started) {
-      setStandardSessionActive(true);
-    }
-  };
-
-  const handleStopStandardSession = async () => {
-    await endSession();
-    if (history.length > 0) {
-      downloadSessionReport(history);
-    }
-    setStandardSessionActive(false);
-    setHistory([]);
-    setActiveHistoryIndex(null);
-    resetWordState();
+    startSession(`standard_level_${lvl}`);
   };
 
   const handleSelectChannel = (selection: ChannelSelection) => {
     resetWordState();
     setCustomPracticeActive(false);
     setForeignPracticeActive(false);
-    setStandardSessionActive(false);
 
     // Gate premium features
     if (selection.kind !== "standard") {
@@ -977,7 +927,6 @@ export default function Index() {
     setActiveChannel(null);
     setCustomPracticeActive(false);
     setForeignPracticeActive(false);
-    setStandardSessionActive(false);
     // Keep session history across dashboard visits; clears on reload.
     setActiveHistoryIndex(null);
     resetWordState();
@@ -1010,10 +959,6 @@ export default function Index() {
 
   const handleSubmit = async () => {
     if (!word || !attempt.trim()) return;
-    if (standardLimitReached) {
-      openUpgradeFlow();
-      return;
-    }
     setSubmitting(true);
     setError(null);
     try {
@@ -1048,10 +993,6 @@ export default function Index() {
         return next;
       });
       const isCorrect = !!res.correctness?.isCorrect;
-
-      if (practiceMode === "standard" && !subscribed) {
-        setStandardWordsUsed((count) => count + 1);
-      }
 
       if (activeSessionId) {
         setSessionWordCount((c) => c + 1);
@@ -1113,10 +1054,6 @@ export default function Index() {
   };
 
   const handleNextWord = async () => {
-    if (standardLimitReached) {
-      openUpgradeFlow();
-      return;
-    }
     if (!(await ensureSessionIsStillActive())) {
       return;
     }
@@ -1174,7 +1111,7 @@ export default function Index() {
   const showCustomSetup = activeChannel === "custom" && !customPracticeActive;
   const showForeignSetup = activeChannel === "foreignOrigin" && !foreignPracticeActive;
   const showPractice =
-    (showStandardFlow && standardSessionActive) ||
+    showStandardFlow ||
     (activeChannel === "custom" && customPracticeActive) ||
     (activeChannel === "foreignOrigin" && foreignPracticeActive);
 
@@ -1201,7 +1138,6 @@ export default function Index() {
           }}
         />
       )}
-      {activeChannel && <WordSearchSidebar />}
       {/* Top app bar — webapp style */}
       <Header
         theme={theme}
@@ -1219,9 +1155,7 @@ export default function Index() {
 
         {/* Dashboard or active channel header */}
         {showDashboard ? (
-          <>
-            <ChannelsDashboard onSelectChannel={handleSelectChannel} />
-          </>
+          <ChannelsDashboard onSelectChannel={handleSelectChannel} />
         ) : (
           <div className="mb-6 flex items-center justify-between gap-2">
             <button
@@ -1319,8 +1253,8 @@ export default function Index() {
           </div>
         )}
 
-        {/* Standard: Level Selector + Start Session (before session starts) */}
-        {showStandardFlow && !standardSessionActive && (
+        {/* Standard: Level Selector (only before a word is loaded) */}
+        {showStandardFlow && !hasWord && !loading && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1335,45 +1269,14 @@ export default function Index() {
               </div>
             </div>
             <LevelSelector selected={level} onSelect={handleLevelChange} />
-            {!subscribed && (
-              <p className="text-center text-xs text-muted-foreground">
-                {Math.max(0, STANDARD_FREE_WORD_LIMIT - standardWordsUsed)} of {STANDARD_FREE_WORD_LIMIT} free words remaining
-              </p>
-            )}
-            <div className="pt-2 flex flex-col items-center gap-2">
-              <button
-                onClick={handleStartStandardSession}
-                disabled={!level}
-                className="inline-flex items-center justify-center gap-2 rounded-lg px-6 py-3 font-semibold text-sm bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm hover:shadow-md transition-all"
-              >
-                <Play className="h-4 w-4" />
-                Start Session
-              </button>
-              <p className="text-xs text-muted-foreground">
-                {level ? "Words you practice will be included in your session report." : "Pick a level to begin your session."}
-              </p>
-            </div>
           </motion.div>
         )}
 
-
-        {/* Active standard session banner */}
-        {showStandardFlow && standardSessionActive && (
-          <div className="mb-4 flex items-center justify-between rounded-xl border border-primary/30 bg-primary/5 px-4 py-2.5">
-            <div>
-              <p className="text-sm font-semibold text-foreground">Session in progress · Level {level}</p>
-              <p className="text-[10px] text-muted-foreground">
-                {history.length} word{history.length === 1 ? "" : "s"} practiced · Stop to download your report
-              </p>
-            </div>
-            <button
-              onClick={handleStopStandardSession}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-destructive/10 hover:bg-destructive/20 text-destructive border border-destructive/30 px-3 py-1.5 text-xs font-semibold transition-colors"
-            >
-              <StopCircle className="h-3.5 w-3.5" />
-              Stop Session
-            </button>
-          </div>
+        {/* Start prompt (standard mode only) */}
+        {showStandardFlow && !word && !loading && !error && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-16">
+            <p className="text-muted-foreground">Choose a level above to begin.</p>
+          </motion.div>
         )}
 
 
@@ -1425,6 +1328,7 @@ export default function Index() {
                 >
                   {word.difficulty}
                 </span>
+
               </div>
               <div className="md:col-span-3 flex flex-col items-center">
                 <button
@@ -1490,10 +1394,12 @@ export default function Index() {
                     targetWord={word.word}
                     disabled={submitting || audioLoading}
                     onSpellingAttempt={(parsed) => {
+                      usedVoiceInput.current = true;
                       setAttempt(parsed);
                       setTimeout(() => inputRef.current?.focus(), 50);
                     }}
                     onSupportResponse={(res) => {
+                      usedVoiceInput.current = true;
                       if (res.intent === "definition") {
                         setDefOpen(true);
                         supportsViewed.current.definitionViewed = true;
@@ -1557,7 +1463,7 @@ export default function Index() {
                       </div>
                     </div>
                   </div>
-                  <CoachingResult result={result} level={level} targetWord={word.word} />
+                  <CoachingResult result={result} level={level} />
                   <button
                     onClick={() => void handleNextWord()}
                     className="w-full inline-flex items-center justify-center gap-2 rounded-lg py-3 font-semibold text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-all shadow-sm hover:shadow-md"
@@ -1592,7 +1498,6 @@ export default function Index() {
           </p>
         </footer>
       </div>
-
       <LevelUpFlash streak={rewards.milestoneHit} onDone={rewards.clearMilestone} />
       <PaymentDialog open={paymentOpen} onOpenChange={setPaymentOpen} />
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} />

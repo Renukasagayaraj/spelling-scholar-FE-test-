@@ -21,9 +21,7 @@ export const supabase: SupabaseClient = createClient(
     auth: {
       persistSession: true,
       autoRefreshToken: true,
-      flowType: "pkce",
-      // OAuth/email callbacks are exchanged explicitly by /auth/callback.
-      detectSessionInUrl: false,
+      detectSessionInUrl: true,
       storage: typeof window !== "undefined" ? window.localStorage : undefined,
     },
   },

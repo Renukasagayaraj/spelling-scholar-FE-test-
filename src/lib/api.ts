@@ -1,4 +1,4 @@
-import { getAccessToken } from "@/lib/supabase";
+import { getAccessToken, supabase } from "@/lib/supabase";
 import { mockNextWord, mockCoaching, mockPronunciationAudio } from "@/lib/mocks";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
@@ -19,11 +19,12 @@ async function authHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export interface MorphemeGloss {
-  part: string;
-  role: string;
-  meaning: string;
-  origin?: string;
+async function handle401(): Promise<never> {
+  const { data } = await supabase.auth.getSession();
+  if (data.session) {
+    await supabase.auth.signOut({ scope: "local" });
+  }
+  throw new UnauthorizedError();
 }
 
 export interface WordData {
@@ -80,9 +81,7 @@ export interface CoachingResponse {
   };
   missAnalysis: {
     summary: string;
-    primaryErrorType: string | null;
-    secondaryErrorTypes: string[];
-    errorTypeEvidence: Record<string, string>;
+    errorTypes: string[];
     primaryErrorFocus: string;
     likelyWrongWordInterpretation: boolean;
     usedMeaningDisambiguationWell: boolean;
@@ -103,7 +102,6 @@ export interface CoachingResponse {
       originLabels: string[];
       morphologyLabels: string[];
       relatedForms?: string[];
-      morphemeGlosses?: MorphemeGloss[];
     };
   };
   errorRelevance: {
@@ -230,7 +228,7 @@ export async function fetchNextWord(
   const headers = opts.customListId ? await authHeaders() : {};
   try {
     const res = await fetch(`${BASE_URL}/api/words/next?${params}`, { headers });
-    if (res.status === 401) throw new UnauthorizedError();
+    if (res.status === 401) await handle401();
     if (!res.ok) throw new Error("Failed to fetch word");
     return await res.json();
   } catch (err) {
@@ -278,7 +276,7 @@ export async function fetchCustomLists(): Promise<CustomListsResponse> {
   if (customListsCache) return customListsCache;
   customListsCache = (async () => {
     const res = await fetch(`${BASE_URL}/api/custom-lists`, { headers: await authHeaders() });
-    if (res.status === 401) throw new UnauthorizedError();
+    if (res.status === 401) await handle401();
     if (!res.ok) throw new Error("Failed to fetch custom lists");
     return res.json();
   })().catch((err) => {
@@ -292,7 +290,7 @@ export async function fetchCustomListWords(listId: string): Promise<WordData[]> 
   const res = await fetch(`${BASE_URL}/api/custom-lists/${encodeURIComponent(listId)}`, {
     headers: await authHeaders(),
   });
-  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 401) await handle401();
   if (!res.ok) throw new Error("Failed to fetch custom list words");
   const data = await res.json();
 
@@ -309,7 +307,7 @@ export async function importCustomWordList(payload: ImportCustomListRequest): Pr
     headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify(payload),
   });
-  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 401) await handle401();
   if (!res.ok) throw new Error("Failed to import custom list");
   invalidateCustomListsCache();
   return res.json();
@@ -346,21 +344,30 @@ export interface SubscriptionStatus {
   subscribed: boolean;
   currentPeriodEnd?: number;
   cancelAtPeriodEnd?: boolean;
-  priceAmount?: number | null;
-  priceCurrency?: string | null;
-  billingInterval?: string | null;
 }
 
 export async function fetchSubscriptionStatus(): Promise<SubscriptionStatus> {
+  if (USE_MOCK_FALLBACK) {
+    const isSub = localStorage.getItem("mock_subscribed") === "true";
+    return {
+      subscribed: isSub,
+      currentPeriodEnd: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60, // 30 days from now
+      cancelAtPeriodEnd: false,
+    };
+  }
   const res = await fetch(`${BASE_URL}/api/stripe/subscription-status`, {
     headers: await authHeaders(),
   });
-  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 401) await handle401();
   if (!res.ok) throw new Error("Failed to fetch subscription status");
   return res.json();
 }
 
 export async function createStripeCheckoutSession(): Promise<{ url: string }> {
+  if (USE_MOCK_FALLBACK) {
+    localStorage.setItem("mock_subscribed", "true");
+    return { url: `${window.location.origin}/?payment_success=true` };
+  }
   const res = await fetch(`${BASE_URL}/api/stripe/create-checkout-session`, {
     method: "POST",
     headers: {
@@ -368,7 +375,7 @@ export async function createStripeCheckoutSession(): Promise<{ url: string }> {
       ...(await authHeaders()),
     },
   });
-  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 401) await handle401();
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
     throw new Error(errData.error || "Failed to create checkout session");
@@ -377,6 +384,9 @@ export async function createStripeCheckoutSession(): Promise<{ url: string }> {
 }
 
 export async function createStripePortalSession(): Promise<{ url: string }> {
+  if (USE_MOCK_FALLBACK) {
+    return { url: window.location.origin };
+  }
   const res = await fetch(`${BASE_URL}/api/stripe/create-portal-session`, {
     method: "POST",
     headers: {
@@ -384,7 +394,7 @@ export async function createStripePortalSession(): Promise<{ url: string }> {
       ...(await authHeaders()),
     },
   });
-  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 401) await handle401();
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
     throw new Error(errData.error || "Failed to create portal session");
@@ -425,7 +435,7 @@ export async function fetchUserProfile(): Promise<UserProfile> {
   const res = await fetch(`${BASE_URL}/api/users/profile`, {
     headers: await authHeaders(),
   });
-  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 401) await handle401();
   if (!res.ok) throw new Error("Failed to fetch user profile");
   const data = await res.json();
   return data.profile;
@@ -446,7 +456,7 @@ export async function updateUserProfile(updates: Partial<Omit<UserProfile, "id" 
     },
     body: JSON.stringify(updates),
   });
-  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 401) await handle401();
   if (!res.ok) throw new Error("Failed to update user profile");
   const data = await res.json();
   return data.profile;
@@ -459,6 +469,7 @@ export interface PracticeSessionRecord {
   status?: "active" | "completed" | "abandoned";
   origin_language?: string | null;
   custom_list_id?: string | null;
+  custom_list_name?: string | null;
   session_started_at: string;
   session_ended_at: string | null;
   total_words_attempted?: number;
@@ -505,6 +516,7 @@ export interface StartPracticeSessionRequest {
   level?: number;
   originLanguage?: string;
   customListId?: string;
+  customListName?: string;
   forceCloseCurrent?: boolean;
 }
 
@@ -519,7 +531,7 @@ export async function startPracticeSession(
     },
     body: JSON.stringify(body),
   });
-  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 401) await handle401();
   if (!res.ok) throw new Error("Failed to start practice session");
   return res.json();
 }
@@ -549,7 +561,7 @@ export async function recordWordAttempt(body: RecordAttemptBody): Promise<string
     },
     body: JSON.stringify(body),
   });
-  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 401) await handle401();
   if (!res.ok) throw new Error("Failed to record word attempt");
   const data = await res.json();
   return data.attemptId;
@@ -572,12 +584,13 @@ export async function endPracticeSession(body: EndSessionBody, keepAlive?: boole
     body: JSON.stringify(body),
     keepalive: keepAlive,
   });
-  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 401) await handle401();
   if (!res.ok) throw new Error("Failed to end practice session");
 }
 
 export interface DbUserStats {
   mode: string;
+  level: number | null;
   origin_language?: string | null;
   custom_list_id?: string | null;
   current_streak: number;
@@ -588,10 +601,13 @@ export interface DbUserStats {
 }
 
 export async function fetchUserStatistics(): Promise<DbUserStats[]> {
+  if (USE_MOCK_FALLBACK) {
+    return [];
+  }
   const res = await fetch(`${BASE_URL}/api/users/stats`, {
     headers: await authHeaders(),
   });
-  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 401) await handle401();
   if (!res.ok) throw new Error("Failed to fetch user statistics");
   const data = await res.json();
   return data.stats;
@@ -622,7 +638,7 @@ export async function fetchSessionAttempts(sessionId: string): Promise<DbWordAtt
   const res = await fetch(`${BASE_URL}/api/sessions/attempts?sessionId=${encodeURIComponent(sessionId)}`, {
     headers: await authHeaders(),
   });
-  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 401) await handle401();
   if (!res.ok) throw new Error("Failed to fetch session attempts");
   const data = await res.json();
   return data.attempts;
@@ -635,97 +651,8 @@ export async function fetchPracticeSession(sessionId: string): Promise<PracticeS
   const res = await fetch(`${BASE_URL}/api/sessions/current?sessionId=${encodeURIComponent(sessionId)}`, {
     headers: await authHeaders(),
   });
-  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 401) await handle401();
   if (!res.ok) throw new Error("Failed to fetch practice session");
   const data = await res.json();
   return data.session;
-}
-
-// ---------- Word search + word detail ----------
-
-export type WordSearchMode = "startsWith" | "contains";
-
-export interface WordSearchResult {
-  word: string;
-  level: string;
-  origin: string;
-  partOfSpeech: string;
-}
-
-export interface WordSearchResponse {
-  query: string;
-  mode: WordSearchMode;
-  limit: number;
-  count: number;
-  results: WordSearchResult[];
-}
-
-export interface WordDetailPhonemeMetadata {
-  source?: string;
-  phonemes?: string[];
-  soundAwarePatterns?: { label: string }[];
-  silentLetters?: { text: string; reason?: string }[];
-  trickyParts?: {
-    text: string;
-    label?: string;
-    reason?: string;
-    source?: string;
-    sounds_like?: string;
-  }[];
-  friendlyChunks?: string[];
-  sayAloudTip?: string;
-  pronunciationConfidence?: string;
-}
-
-export interface WordDetail {
-  word: string;
-  level: string;
-  gradeBand?: string;
-  difficulty?: string;
-  origin: string;
-  definition: string;
-  exampleSentence: string;
-  partOfSpeech: string;
-  wordBreakdown?: {
-    displayChunks: string[];
-    alternateDisplayChunks?: string[];
-    chunkReason?: string;
-    matchedPatterns?: { label: string; matchedText?: string; matchedParts?: string[] }[];
-  };
-  conceptLabels?: {
-    originLabels: string[];
-    patternLabels: string[];
-    morphologyLabels: string[];
-  };
-  wordTeaching?: {
-    conceptTeaching?: {
-      summary?: string;
-      meaningFocus?: string;
-      originFocus?: string;
-      morphologyFocus?: string;
-      originLabels?: string[];
-      morphologyLabels?: string[];
-      relatedForms?: string[];
-      morphemeGlosses?: MorphemeGloss[];
-    };
-  };
-  phonemeMetadata?: WordDetailPhonemeMetadata;
-}
-
-export async function searchWords(
-  query: string,
-  mode: WordSearchMode = "startsWith",
-  limit = 10,
-): Promise<WordSearchResponse> {
-  const params = new URLSearchParams({ q: query, mode });
-  if (limit) params.set("limit", String(limit));
-  const res = await fetch(`${BASE_URL}/api/words/search?${params}`);
-  if (!res.ok) throw new Error("Failed to search words");
-  return res.json();
-}
-
-export async function fetchWordDetail(word: string): Promise<WordDetail> {
-  const res = await fetch(`${BASE_URL}/api/words/${encodeURIComponent(word)}`);
-  if (!res.ok) throw new Error("Failed to fetch word detail");
-  return res.json();
 }

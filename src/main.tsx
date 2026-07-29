@@ -7,10 +7,7 @@ import "./index.css";
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
-  release: import.meta.env.VITE_APP_VERSION || "dev",
-  sendDefaultPii: true,
-  environment: import.meta.env.VITE_APP_ENV || import.meta.env.MODE,
-  autoSessionTracking: true
+  sendDefaultPii: true
 });
 
 // Expose Sentry globally so we can test it from the browser developer console
@@ -20,13 +17,17 @@ Sentry.init({
 import { supabase } from "@/lib/supabase";
 (window as any).supabase = supabase;
 
-// Inject Tidio script
-(function() {
+// Dynamically inject HubSpot tracking script if configured
+const hubspotId = import.meta.env.VITE_HUBSPOT_TRACKING_ID;
+if (hubspotId) {
   const script = document.createElement("script");
-  script.src = `//code.tidio.co/${import.meta.env.VITE_TIDIO_TRACK_ID}.js`;
+  script.type = "text/javascript";
+  script.id = "hs-script-loader";
   script.async = true;
+  script.defer = true;
+  script.src = `//js.hs-scripts.com/${hubspotId}.js`;
   document.body.appendChild(script);
-})();
+}
 
 createRoot(document.getElementById("root")!).render(
   <>

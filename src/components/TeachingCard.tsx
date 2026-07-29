@@ -1,7 +1,5 @@
 import { cn } from "@/lib/utils";
 import { LabelChips } from "./LabelChips";
-import { MorphemeGlossChips } from "./MorphemeGlossChips";
-import type { MorphemeGloss } from "@/lib/api";
 
 interface TeachingCardProps {
   title: string;
@@ -52,24 +50,20 @@ interface ConceptTeachingData {
   originLabels: string[];
   morphologyLabels: string[];
   relatedForms?: string[];
-  morphemeGlosses?: MorphemeGloss[];
 }
 
 function hasContent(data: ConceptTeachingData): boolean {
   return !!(
-    data.summary || data.originLabels?.length || data.morphologyLabels?.length || data.morphemeGlosses?.length
+    data.summary || data.originLabels?.length || data.morphologyLabels?.length
   );
 }
 
-export function ConceptTeachingContent({ data, targetWord }: { data: ConceptTeachingData; targetWord?: string }) {
+export function ConceptTeachingContent({ data }: { data: ConceptTeachingData }) {
   if (!hasContent(data)) {
     return <p className="text-muted-foreground italic text-xs">No strong concept clue needed for this word right now.</p>;
   }
   return (
     <>
-      {targetWord && data.morphemeGlosses && data.morphemeGlosses.length > 0 && (
-        <MorphemeGlossChips word={targetWord} glosses={data.morphemeGlosses} />
-      )}
       {data.summary && <p>{data.summary}</p>}
       <LabelChips labels={data.originLabels} variant="accent" title="Origin" />
       <LabelChips labels={data.morphologyLabels} variant="warm" title="Morphology" />

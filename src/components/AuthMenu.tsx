@@ -49,10 +49,7 @@ export function AuthMenu() {
           </button>
         )}
         <button
-          onClick={async () => {
-            await signOut();
-            navigate("/");
-          }}
+          onClick={() => signOut()}
           className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
           title="Sign out"
         >
