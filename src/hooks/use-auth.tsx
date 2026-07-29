@@ -1,0 +1,236 @@
+import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from "react";
+import type { Session, User } from "@supabase/supabase-js";
+import { supabase, supabaseConfigured } from "@/lib/supabase";
+import {
+  invalidateCustomListsCache,
+  fetchSubscriptionStatus,
+  fetchUserProfile,
+  updateUserProfile,
+  endPracticeSession,
+  type UserProfile
+} from "@/lib/api";
+
+interface AuthContextValue {
+  user: User | null;
+  session: Session | null;
+  profile: UserProfile | null;
+  loading: boolean;
+  configured: boolean;
+  subscribed: boolean;
+  checkingSubscription: boolean;
+  currentPeriodEnd: number | null;
+  cancelAtPeriodEnd: boolean;
+  priceAmount: number | null;
+  priceCurrency: string | null;
+  billingInterval: string | null;
+  refreshSubscription: () => Promise<void>;
+  refreshProfile: () => Promise<void>;
+  updateProfile: (updates: Partial<Omit<UserProfile, "id" | "email">>) => Promise<{ error: string | null }>;
+  signInWithPassword: (email: string, password: string) => Promise<{ error: string | null }>;
+  signUpWithPassword: (email: string, password: string) => Promise<{ error: string | null }>;
+  signInWithGoogle: () => Promise<{ error: string | null }>;
+  signInWithFacebook: () => Promise<{ error: string | null }>;
+  signOut: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [session, setSession] = useState<Session | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [subscribed, setSubscribed] = useState(false);
+  const [checkingSubscription, setCheckingSubscription] = useState(false);
+  const [currentPeriodEnd, setCurrentPeriodEnd] = useState<number | null>(null);
+  const [cancelAtPeriodEnd, setCancelAtPeriodEnd] = useState(false);
+  const [priceAmount, setPriceAmount] = useState<number | null>(null);
+  const [priceCurrency, setPriceCurrency] = useState<string | null>(null);
+  const [billingInterval, setBillingInterval] = useState<string | null>(null);
+
+  const refreshSubscription = useCallback(async () => {
+    if (!user) {
+      setSubscribed(false);
+      setCurrentPeriodEnd(null);
+      setCancelAtPeriodEnd(false);
+      setPriceAmount(null);
+      setPriceCurrency(null);
+      setBillingInterval(null);
+      return;
+    }
+    setCheckingSubscription(true);
+    try {
+      const res = await fetchSubscriptionStatus();
+      setSubscribed(res.subscribed);
+      setCurrentPeriodEnd(res.currentPeriodEnd ?? null);
+      setCancelAtPeriodEnd(!!res.cancelAtPeriodEnd);
+      setPriceAmount(res.priceAmount ?? null);
+      setPriceCurrency(res.priceCurrency ?? null);
+      setBillingInterval(res.billingInterval ?? null);
+    } catch (err) {
+      console.error("Failed to check subscription status:", err);
+      setSubscribed(false);
+      setCurrentPeriodEnd(null);
+      setCancelAtPeriodEnd(false);
+      setPriceAmount(null);
+      setPriceCurrency(null);
+      setBillingInterval(null);
+    } finally {
+      setCheckingSubscription(false);
+    }
+  }, [user]);
+
+  const refreshProfile = useCallback(async () => {
+    if (!user) {
+      setProfile(null);
+      return;
+    }
+    try {
+      const prof = await fetchUserProfile();
+      setProfile(prof);
+    } catch (err) {
+      console.error("Failed to fetch user profile:", err);
+      setProfile(null);
+    }
+  }, [user]);
+
+  const updateProfile = async (updates: Partial<Omit<UserProfile, "id" | "email">>) => {
+    if (!user) return { error: "No user authenticated." };
+    try {
+      const updated = await updateUserProfile(updates);
+      setProfile(updated);
+      return { error: null };
+    } catch (err: any) {
+      console.error("Failed to update user profile:", err);
+      return { error: err?.message || "Failed to update profile." };
+    }
+  };
+
+  useEffect(() => {
+    if (user) {
+      refreshSubscription();
+      refreshProfile();
+    } else {
+      setSubscribed(false);
+      setCurrentPeriodEnd(null);
+      setCancelAtPeriodEnd(false);
+      setPriceAmount(null);
+      setPriceCurrency(null);
+      setBillingInterval(null);
+      setProfile(null);
+    }
+  }, [user, refreshSubscription, refreshProfile]);
+
+  useEffect(() => {
+    if (!supabaseConfigured) {
+      setLoading(false);
+      return;
+    }
+
+    // 1. Set up listener FIRST
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      invalidateCustomListsCache();
+      setSession(newSession);
+      setUser(newSession?.user ?? null);
+    });
+    // 2. Then fetch existing session
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setUser(data.session?.user ?? null);
+      setLoading(false);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  const value: AuthContextValue = {
+    user,
+    session,
+    profile,
+    loading,
+    configured: supabaseConfigured,
+    subscribed,
+    checkingSubscription,
+    currentPeriodEnd,
+    cancelAtPeriodEnd,
+    priceAmount,
+    priceCurrency,
+    billingInterval,
+    refreshSubscription,
+    refreshProfile,
+    updateProfile,
+    signInWithPassword: async (email, password) => {
+      if (!supabaseConfigured) return { error: "Auth is not configured. Please contact support." };
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      return { error: error?.message ?? null };
+    },
+    signUpWithPassword: async (email, password) => {
+      if (!supabaseConfigured) return { error: "Auth is not configured. Please contact support." };
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
+      });
+      return { error: error?.message ?? null };
+    },
+    signInWithGoogle: async () => {
+      if (!supabaseConfigured) return { error: "Auth is not configured. Please contact support." };
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: `${window.location.origin}/auth/callback` },
+      });
+      return { error: error?.message ?? null };
+    },
+    signInWithFacebook: async () => {
+      if (!supabaseConfigured) return { error: "Auth is not configured. Please contact support." };
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "facebook",
+        options: { redirectTo: `${window.location.origin}/auth/callback` },
+      });
+      return { error: error?.message ?? null };
+    },
+    signOut: async () => {
+      if (!supabaseConfigured) return;
+
+      // Try to end active session if present in localStorage before signing out
+      try {
+        const savedRecovery = localStorage.getItem("active_session_recovery");
+        if (savedRecovery) {
+          const recovery = JSON.parse(savedRecovery);
+          const { activeSessionId, activeSessionMode, sessionStartTime, sessionWordCount, sessionCorrectCount } = recovery;
+
+          if (activeSessionId && sessionStartTime) {
+            const savedMap = localStorage.getItem("active_sessions_map");
+            const map = savedMap ? JSON.parse(savedMap) : {};
+            const prevAcc = (activeSessionMode && map[activeSessionMode]?.accumulatedDuration) || 0;
+            const currentDuration = Math.round((Date.now() - sessionStartTime) / 1000);
+            const totalDuration = prevAcc + currentDuration;
+
+            await endPracticeSession({
+              sessionId: activeSessionId,
+              totalWordsAttempted: sessionWordCount || 0,
+              totalCorrect: sessionCorrectCount || 0,
+              durationSeconds: totalDuration || 0,
+            });
+          }
+        }
+      } catch (err) {
+        console.error("Failed to end active session during sign out:", err);
+      }
+
+      await supabase.auth.signOut();
+      localStorage.removeItem("active_session_recovery");
+      localStorage.removeItem("active_session_history");
+      localStorage.removeItem("active_session_history_index");
+      localStorage.removeItem("active_sessions_map");
+      localStorage.removeItem("spelling-coach-rewards-v1");
+    },
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth(): AuthContextValue {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used within an AuthProvider");
+  return ctx;
+}
