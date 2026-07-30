@@ -276,7 +276,7 @@ export interface DbWordAttempt {
   part_of_speech_viewed?: boolean;
   repeat_word_count?: number;
   used_voice_input?: boolean;
-  coaching_response?: string | null;
+  coaching_response?: Record<string, unknown> | string | null;
   created_at: string;
   word_catalog_entry?: Partial<WordData> | null;
 }
@@ -1331,6 +1331,32 @@ export async function fetchUserStatistics(): Promise<DbUserStats[]> {
     }
     throw err;
   }
+}
+
+export type ReportDateRange = "7d" | "30d" | "90d" | "all";
+
+export type ReportSectionResponse<Section extends ReportSection> =
+  Pick<ReportsMock, Section> & { pagination?: ReportPagination };
+
+export async function fetchReports<Section extends ReportSection>(
+  range: ReportDateRange,
+  section: Section,
+  page = 1,
+): Promise<ReportSectionResponse<Section>> {
+  const params = new URLSearchParams({
+    range,
+    section,
+    page: String(page),
+    pageSize: "10",
+    locale: navigator.language || "en-US",
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+  });
+  const res = await fetch(`${BASE_URL}/api/reports?${params}`, {
+    headers: await authHeaders(),
+  });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok) throw new Error("Failed to fetch report data");
+  return res.json();
 }
 
 // ---------- Word search + word detail ----------

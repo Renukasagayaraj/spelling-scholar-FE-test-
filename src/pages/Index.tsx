@@ -94,7 +94,9 @@ function parseStoredCoaching(attempt: DbWordAttempt): CoachingResponse {
     correctness: { isCorrect: attempt.is_correct, reinforceSuccess: true },
     missAnalysis: {
       summary: "",
-      errorTypes: [],
+      primaryErrorType: null,
+      secondaryErrorTypes: [],
+      errorTypeEvidence: {},
       primaryErrorFocus: "",
       likelyWrongWordInterpretation: false,
       usedMeaningDisambiguationWell: false,
