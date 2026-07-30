@@ -1,9 +1,9 @@
 import { motion } from "framer-motion";
 import {
   CheckCircle2, XCircle, Lightbulb, BookOpen, Puzzle, Volume2,
-  ArrowRight, Layers, Shapes, BookText, Loader2, AlertCircle
+  ArrowRight, Brain, Layers, Target, Shapes, BookText
 } from "lucide-react";
-import type { CoachingResponse, SpellingCoachRuntimeSectionState } from "@/lib/api";
+import type { CoachingResponse } from "@/lib/api";
 import { WordBreakdownChips } from "./WordBreakdownChips";
 import { LabelChips } from "./LabelChips";
 import { MatchedPatternChips } from "./MatchedPatternChips";
@@ -35,28 +35,6 @@ function Section({ icon: Icon, title, children, className }: { icon: React.Eleme
   );
 }
 
-function RuntimeText({ state, text, italic = false }: { state?: SpellingCoachRuntimeSectionState; text: string; italic?: boolean }) {
-  if (state?.status === "error" && !text) {
-    return (
-      <div className="flex items-center gap-2 text-muted-foreground">
-        <AlertCircle className="h-3.5 w-3.5 text-warning" />
-        <span>This section could not be loaded.</span>
-      </div>
-    );
-  }
-
-  if (!text && (state?.status === "idle" || state?.status === "streaming")) {
-    return (
-      <div className="flex items-center gap-2 text-muted-foreground">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        <span>Loading…</span>
-      </div>
-    );
-  }
-
-  return <p className={italic ? "italic" : undefined}>{text}</p>;
-}
-
 const relevanceBadgeStyle: Record<string, string> = {
   form: "bg-primary/10 text-primary",
   concept: "bg-chip-accent text-chip-accent-foreground",
@@ -68,12 +46,10 @@ export function CoachingResult({ result, level, targetWord }: CoachingResultProp
   const isLevel1 = level === 1;
   const { correctness, missAnalysis, wordTeaching, errorRelevance, teachingDecision, coachingText, wordBreakdown, conceptLabels, nextStep } = result;
   const isCorrect = correctness.isCorrect;
-  const missState = result.streamSections?.miss_analysis;
-  const explanationState = result.streamSections?.explanation;
-  const memoryTipState = result.streamSections?.memory_tip;
 
   return (
     <div className="space-y-3">
+      {/* Quick Feedback Banner */}
       <motion.div
         initial={{ scale: 0.95, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
@@ -86,11 +62,10 @@ export function CoachingResult({ result, level, targetWord }: CoachingResultProp
           {isCorrect ? <CheckCircle2 className="h-6 w-6 text-success" /> : <XCircle className="h-6 w-6 text-secondary" />}
           <span className="font-display text-lg">{isCorrect ? "Correct!" : "Not quite!"}</span>
         </div>
-        {coachingText.shortFeedback && (
-          <p className="text-sm text-muted-foreground">{coachingText.shortFeedback}</p>
-        )}
+        <p className="text-sm text-muted-foreground">{coachingText.shortFeedback}</p>
       </motion.div>
 
+      {/* Word Breakdown */}
       {wordBreakdown?.displayChunks?.length > 0 && (
         <Section icon={Puzzle} title="Word Breakdown">
           <WordBreakdownChips chunks={wordBreakdown.displayChunks} reason={wordBreakdown.chunkReason} />
@@ -202,18 +177,22 @@ export function CoachingResult({ result, level, targetWord }: CoachingResultProp
       {/* What Matters Most For This Error - hidden for cleaner UX */}
       {/* Teaching Decision - hidden for cleaner UX */}
 
-      {!isLevel1 && !isCorrect && (coachingText.fullExplanation || (explanationState && explanationState.status !== "complete")) && (
+      {/* Explanation */}
+      {!isLevel1 && !isCorrect && coachingText.fullExplanation && (
         <Section icon={BookOpen} title="Explanation">
-          <RuntimeText state={explanationState} text={coachingText.fullExplanation} />
+          <p>{coachingText.fullExplanation}</p>
         </Section>
       )}
 
-      {(coachingText.memoryTip || (memoryTipState && memoryTipState.status !== "complete")) && (
+      {/* Memory Tip */}
+      {coachingText.memoryTip && (
         <Section icon={Lightbulb} title="Memory Tip">
-          <RuntimeText state={memoryTipState} text={coachingText.memoryTip} italic />
+          <p className="italic">{coachingText.memoryTip}</p>
         </Section>
       )}
 
+      {/* Say It Aloud */}
+      {/* Say It Aloud (L1 only — for L2/L3 this is shown inside Form Teaching) */}
       {isLevel1 && coachingText.sayAloudTip && (
         <Section icon={Volume2} title="Say It Aloud">
           <p>{coachingText.sayAloudTip}</p>

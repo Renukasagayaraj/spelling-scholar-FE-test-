@@ -129,11 +129,16 @@ export const TIMER_BY_LEVEL: Record<MockBeeLevel, MockBeeTimer> = {
 
 // ===== Real API calls =====
 export type CreateMockBeeRoundResult =
-  | (MockBeeSession & {
-      action?: "created" | "resume_existing";
-      sessionId?: string;
-      session?: MockBeeSession;
-    })
+  | {
+      action: "created";
+      sessionId: string;
+      session: MockBeeSession;
+    }
+  | {
+      action: "resume_existing";
+      sessionId: string;
+      session: MockBeeSession;
+    }
   | {
       action: "active_session_conflict";
       activeSessionId: string;
@@ -142,11 +147,12 @@ export type CreateMockBeeRoundResult =
 
 export async function createMockBeeRound(req: CreateRoundRequest): Promise<CreateMockBeeRoundResult> {
   if (USE_MOCK_FALLBACK) {
-    const session: any = mockCreateRound(req);
-    Object.defineProperty(session, "action", { value: "created", configurable: true });
-    Object.defineProperty(session, "sessionId", { value: session.id, configurable: true });
-    Object.defineProperty(session, "session", { value: session, configurable: true });
-    return session;
+    const session = mockCreateRound(req);
+    return {
+      action: "created",
+      sessionId: session.id,
+      session,
+    };
   }
   const res = await fetch(`${BASE_URL}/api/mock-bee/sessions`, {
     method: "POST",
@@ -156,16 +162,7 @@ export async function createMockBeeRound(req: CreateRoundRequest): Promise<Creat
   if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) throw new Error("Failed to create mock bee round");
   const data = await res.json();
-  if (data && data.action === "active_session_conflict") {
-    return data;
-  }
-  const session: any = data && data.session ? data.session : data;
-  if (session && typeof session === "object") {
-    Object.defineProperty(session, "action", { value: "created", configurable: true });
-    Object.defineProperty(session, "sessionId", { value: session.id, configurable: true });
-    Object.defineProperty(session, "session", { value: session, configurable: true });
-  }
-  return session;
+  return data;
 }
 
 export async function getMockBeeSession(id: string): Promise<MockBeeSession> {
@@ -412,14 +409,9 @@ function mockReview(id: string): ReviewResponse["review"] {
       ? mockCoaching({
           targetWord: w.word,
           childAttempt: a?.attempt || "",
-          level: Number(state.session.config.level),
-          mode: "mock_bee",
-          definitionViewed: false,
-          exampleViewed: false,
-          originViewed: false,
-          partOfSpeechViewed: false,
-          repeatWordCount: 0,
-          usedVoiceInput: false,
+          childProfile: { childId: "c1", age: 10, grade: "5", spellingLevel: `level_${state.session.config.level}` },
+          supportsUsed: { definitionViewed: false, exampleViewed: false, originViewed: false },
+          sessionContext: { mode: "mock_bee", previousAttemptsOnThisWord: 1, previousMissPatterns: [], recentlyPracticedWords: [] },
         })
       : null;
     return {

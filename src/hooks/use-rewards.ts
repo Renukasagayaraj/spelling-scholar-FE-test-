@@ -56,38 +56,34 @@ function normalizeStandardLevel(level?: number): 1 | 2 | 3 {
   return level;
 }
 
-function getRewardsKey(mode: any, level?: number): string {
-  if (typeof mode === "number" || (typeof mode === "string" && /^\d+$/.test(mode))) {
-    return String(mode);
-  }
-  const modeStr = String(mode || "");
-  if (modeStr === "standard") {
+function getRewardsKey(mode: string, level?: number): string {
+  if (mode === "standard") {
     return `standard_level_${normalizeStandardLevel(level)}`;
   }
 
-  if (modeStr.startsWith("standard_level_")) {
-    const parsedLevel = Number(modeStr.replace("standard_level_", ""));
+  if (mode.startsWith("standard_level_")) {
+    const parsedLevel = Number(mode.replace("standard_level_", ""));
     normalizeStandardLevel(parsedLevel);
-    return modeStr;
+    return mode;
   }
 
-  if (modeStr.startsWith("custom_list_") || modeStr === "custom") {
-    return modeStr.startsWith("custom_list_") ? modeStr : "custom";
+  if (mode.startsWith("custom_list_") || mode === "custom") {
+    return mode.startsWith("custom_list_") ? mode : "custom";
   }
 
-  if (modeStr.startsWith("foreign_origin_") || modeStr === "foreign_origin" || modeStr === "foreignOrigin") {
-    if (modeStr.startsWith("foreign_origin_")) {
-      return modeStr;
+  if (mode.startsWith("foreign_origin_") || mode === "foreign_origin" || mode === "foreignOrigin") {
+    if (mode.startsWith("foreign_origin_")) {
+      return mode;
     }
 
     return "foreign_origin";
   }
 
-  if (modeStr === "mock_bee" || modeStr === "mock-bee") {
+  if (mode === "mock_bee" || mode === "mock-bee") {
     return "mock_bee";
   }
 
-  return modeStr;
+  return mode;
 }
 
 function getRewardsKeyFromDbRow(row: RewardStatsRow): string {
