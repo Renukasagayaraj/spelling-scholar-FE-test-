@@ -39,6 +39,8 @@ import {
 import { CoachingResult } from "@/components/CoachingResult";
 import beePng from "@/assets/bee.png";
 import { ActiveSessionConflictDialog } from "@/components/ActiveSessionConflictDialog";
+import { AuthDialog } from "@/components/AuthDialog";
+import { PaymentDialog } from "@/components/PaymentDialog";
 import { queuePracticeResumeMode, takeMockBeeResume } from "@/lib/sessionResume";
 
 const DEFAULT_PROFILE = { childId: "c1", age: 10, grade: "5", spellingLevel: "level_2" };
@@ -53,7 +55,9 @@ const LEVEL_META: Record<MockBeeLevel, { label: string; subtitle: string; second
 
 export default function MockBee() {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, subscribed } = useAuth();
+  const [authOpen, setAuthOpen] = useState(false);
+  const [paymentOpen, setPaymentOpen] = useState(false);
 
   // Setup state
   const [stage, setStage] = useState<Stage>("setup");
@@ -158,6 +162,14 @@ export default function MockBee() {
   const startRound = async (forceCloseCurrent = false): Promise<boolean> => {
     setSetupError(null);
     setRoundError(null);
+    if (wordSource === "standard" && String(level) === "3" && !subscribed) {
+      setPaymentOpen(true);
+      return false;
+    }
+    if (wordSource === "custom_list" && !user) {
+      setAuthOpen(true);
+      return false;
+    }
     if (wordSource === "custom_list" && !customListId) {
       setSetupError("Pick a custom list to continue.");
       return false;
@@ -182,7 +194,7 @@ export default function MockBee() {
         return false;
       }
 
-      setSession(result.session);
+      setSession((result as any).session || (result as any));
       setStage("round");
       resetTurnState();
       return true;
@@ -386,7 +398,7 @@ export default function MockBee() {
             className="flex items-center gap-2 rounded-lg px-1.5 py-1 -ml-1.5 hover:bg-primary/10 transition-colors"
           >
             <img src={beePng} alt="Spelling bee mascot" className="h-14 w-auto mt-1" />
-            <span className="text-lg font-display tracking-tight text-foreground font-serif font-semibold">
+            <span className="text-lg font-display font-semibold tracking-tight text-foreground">
               AI Spelling Coach
             </span>
           </button>
@@ -493,6 +505,8 @@ export default function MockBee() {
         onStartNew={handleConflictStartNew}
         onCancel={handleConflictCancel}
       />
+      <PaymentDialog open={paymentOpen} onOpenChange={setPaymentOpen} />
+      <AuthDialog open={authOpen} onOpenChange={setAuthOpen} />
     </div>
   );
 }

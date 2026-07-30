@@ -20,6 +20,9 @@ interface AuthContextValue {
   checkingSubscription: boolean;
   currentPeriodEnd: number | null;
   cancelAtPeriodEnd: boolean;
+  priceAmount: number | null;
+  priceCurrency: string | null;
+  billingInterval: string | null;
   refreshSubscription: () => Promise<void>;
   refreshProfile: () => Promise<void>;
   updateProfile: (updates: Partial<Omit<UserProfile, "id" | "email">>) => Promise<{ error: string | null }>;
@@ -30,7 +33,7 @@ interface AuthContextValue {
   signOut: () => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+export const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -41,12 +44,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [checkingSubscription, setCheckingSubscription] = useState(false);
   const [currentPeriodEnd, setCurrentPeriodEnd] = useState<number | null>(null);
   const [cancelAtPeriodEnd, setCancelAtPeriodEnd] = useState(false);
+  const [priceAmount, setPriceAmount] = useState<number | null>(null);
+  const [priceCurrency, setPriceCurrency] = useState<string | null>(null);
+  const [billingInterval, setBillingInterval] = useState<string | null>(null);
 
   const refreshSubscription = useCallback(async () => {
     if (!user) {
       setSubscribed(false);
       setCurrentPeriodEnd(null);
       setCancelAtPeriodEnd(false);
+      setPriceAmount(null);
+      setPriceCurrency(null);
+      setBillingInterval(null);
       return;
     }
     setCheckingSubscription(true);
@@ -55,11 +64,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSubscribed(res.subscribed);
       setCurrentPeriodEnd(res.currentPeriodEnd ?? null);
       setCancelAtPeriodEnd(!!res.cancelAtPeriodEnd);
+      setPriceAmount(res.priceAmount ?? null);
+      setPriceCurrency(res.priceCurrency ?? null);
+      setBillingInterval(res.billingInterval ?? null);
     } catch (err) {
       console.error("Failed to check subscription status:", err);
       setSubscribed(false);
       setCurrentPeriodEnd(null);
       setCancelAtPeriodEnd(false);
+      setPriceAmount(null);
+      setPriceCurrency(null);
+      setBillingInterval(null);
     } finally {
       setCheckingSubscription(false);
     }
@@ -99,6 +114,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSubscribed(false);
       setCurrentPeriodEnd(null);
       setCancelAtPeriodEnd(false);
+      setPriceAmount(null);
+      setPriceCurrency(null);
+      setBillingInterval(null);
       setProfile(null);
     }
   }, [user, refreshSubscription, refreshProfile]);
@@ -109,30 +127,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // Strip OAuth tokens from the URL hash so they aren't visible/shareable.
-    // Supabase's detectSessionInUrl parses them, but we clean the address bar.
-    const scrubAuthHash = () => {
-      if (typeof window === "undefined") return;
-      const hash = window.location.hash;
-      if (hash && /[#&](access_token|refresh_token|provider_token|error_description)=/.test(hash)) {
-        const cleanUrl = window.location.pathname + window.location.search;
-        window.history.replaceState(null, "", cleanUrl);
-      }
-    };
-
     // 1. Set up listener FIRST
     const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
       invalidateCustomListsCache();
       setSession(newSession);
       setUser(newSession?.user ?? null);
-      scrubAuthHash();
     });
     // 2. Then fetch existing session
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setUser(data.session?.user ?? null);
       setLoading(false);
-      scrubAuthHash();
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -147,6 +152,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     checkingSubscription,
     currentPeriodEnd,
     cancelAtPeriodEnd,
+    priceAmount,
+    priceCurrency,
+    billingInterval,
     refreshSubscription,
     refreshProfile,
     updateProfile,
@@ -160,7 +168,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { error } = await supabase.auth.signUp({
         email,
         password,
-        options: { emailRedirectTo: window.location.origin },
+        options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
       });
       return { error: error?.message ?? null };
     },
@@ -168,7 +176,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!supabaseConfigured) return { error: "Auth is not configured. Please contact support." };
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: { redirectTo: window.location.origin },
+        options: { redirectTo: `${window.location.origin}/auth/callback` },
       });
       return { error: error?.message ?? null };
     },
@@ -176,7 +184,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!supabaseConfigured) return { error: "Auth is not configured. Please contact support." };
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "facebook",
-        options: { redirectTo: window.location.origin },
+        options: { redirectTo: `${window.location.origin}/auth/callback` },
       });
       return { error: error?.message ?? null };
     },
