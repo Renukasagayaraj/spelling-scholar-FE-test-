@@ -289,7 +289,7 @@ export default function Profile() {
                         {/* Right side: Subscription Management */}
                         <div className="md:col-span-2 space-y-6">
                             {/* Profile Details Form */}
-                            <div className="bg-card border border-border/60 rounded-2xl p-6 sm:p-8 shadow-sm space-y-6">
+                            {/* <div className="bg-card border border-border/60 rounded-2xl p-6 sm:p-8 shadow-sm space-y-6">
                                 <div className="flex items-center gap-2 border-b border-border/50 pb-4">
                                     <div className="p-2 bg-primary/10 text-primary rounded-xl">
                                         <UserIcon className="h-5 w-5" />
@@ -392,7 +392,7 @@ export default function Profile() {
                                         )}
                                     </button>
                                 </form>
-                            </div>
+                            </div> */}
 
                             {subscribed ? (
                                 /* Subscribed Premium Panel */
