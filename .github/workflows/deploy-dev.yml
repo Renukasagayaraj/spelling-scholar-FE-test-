@@ -83,6 +83,8 @@ jobs:
           [ -z "${{ secrets.DEV_VITE_TIDIO_TRACK_ID }}" ] && MISSING="$MISSING DEV_VITE_TIDIO_TRACK_ID"
           [ -z "${{ secrets.DEV_VITE_GOOGLE_ANALYTICS_ID }}" ] && MISSING="$MISSING DEV_VITE_GOOGLE_ANALYTICS_ID"
           [ -z "${{ secrets.DEV_VITE_SUBSCRIPTION_PRICE }}" ] && MISSING="$MISSING DEV_VITE_SUBSCRIPTION_PRICE"
+          [ -z "${{ secrets.DEV_E2E_USER_EMAIL }}" ] && MISSING="$MISSING DEV_E2E_USER_EMAIL"
+          [ -z "${{ secrets.DEV_E2E_USER_PASSWORD }}" ] && MISSING="$MISSING DEV_E2E_USER_PASSWORD"
           
           if [ -n "$MISSING" ]; then
             echo "::error::Missing GitHub Secrets:$MISSING"
@@ -93,6 +95,8 @@ jobs:
     name: Deploy to Vercel (Dev)
     needs: verify
     runs-on: ubuntu-latest
+    outputs:
+      deploy_url: ${{ steps.deploy.outputs.url }}
     defaults:
       run:
         working-directory: ./spelling-scholar-fe
@@ -145,6 +149,7 @@ jobs:
         run: |
           DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
           echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_ENV
+          echo "url=https://dev.brightbee.ai" >> $GITHUB_OUTPUT
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.DEV_VERCEL_PROJECT_ID }}
@@ -157,3 +162,36 @@ jobs:
           if [ -n "${{ github.event.inputs.description }}" ]; then
             echo "- **Description/Notes:** ${{ github.event.inputs.description }}" >> $GITHUB_STEP_SUMMARY
           fi
+
+  e2e_test:
+    name: Run E2E Tests
+    needs: deploy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./spelling-scholar-fe
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          path: spelling-scholar-fe
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: spelling-scholar-fe/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+
+      - name: Run Playwright Tests
+        run: npx playwright test
+        env:
+          BASE_URL: https://dev.brightbee.ai
+          E2E_USER_EMAIL: ${{ secrets.DEV_E2E_USER_EMAIL }}
+          E2E_USER_PASSWORD: ${{ secrets.DEV_E2E_USER_PASSWORD }}
