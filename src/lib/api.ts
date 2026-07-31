@@ -1255,6 +1255,7 @@ export interface UserProfile {
   age: number | null;
   grade: string | null;
   spelling_level: string | null;
+  weekly_email_enabled: boolean;
 }
 
 export async function fetchUserProfile(): Promise<UserProfile> {
@@ -1271,6 +1272,7 @@ export async function fetchUserProfile(): Promise<UserProfile> {
       age: 10,
       grade: "5",
       spelling_level: "competition",
+      weekly_email_enabled: false,
     };
     localStorage.setItem("mock_user_profile", JSON.stringify(mock));
     return mock;
