@@ -608,7 +608,7 @@ describe("streaming practice session lifecycle", () => {
         return { ok: true, status: 200, json: async () => ({ attemptId: "attempt-1" }) };
       })
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ session }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true }) });
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true, result: "completed" }) });
     vi.stubGlobal("fetch", fetchMock);
 
     const started = await startPracticeSession({ mode: "standard", level: 2 });

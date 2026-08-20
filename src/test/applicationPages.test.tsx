@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   fetchCustomListWords: vi.fn(),
   fetchForeignOriginDetails: vi.fn(),
   fetchPronunciationAudio: vi.fn(),
+  fetchGuestUsage: vi.fn(),
   startPracticeSession: vi.fn(),
   fetchSessionAttempts: vi.fn(),
   submitSpellingAttempt: vi.fn(),
@@ -68,6 +69,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     fetchCustomListWords: mocks.fetchCustomListWords,
     fetchForeignOriginDetails: mocks.fetchForeignOriginDetails,
     fetchPronunciationAudio: mocks.fetchPronunciationAudio,
+    fetchGuestUsage: mocks.fetchGuestUsage,
     startPracticeSession: mocks.startPracticeSession,
     fetchSessionAttempts: mocks.fetchSessionAttempts,
     submitSpellingAttempt: mocks.submitSpellingAttempt,
@@ -133,10 +135,16 @@ describe("main application pages", () => {
     mocks.fetchCustomListWords.mockResolvedValue([word]);
     mocks.fetchForeignOriginDetails.mockResolvedValue({ origin: "Greek", wordCount: 4, words: [word] });
     mocks.fetchPronunciationAudio.mockResolvedValue("blob:word");
+    mocks.fetchGuestUsage.mockResolvedValue({
+      guestToken: "guest-token",
+      attemptsUsed: 0,
+      attemptsRemaining: 5,
+      limit: 5,
+    });
     mocks.fetchNextWord.mockResolvedValue(word);
     mocks.startPracticeSession.mockResolvedValue({ action: "created", sessionId: "practice-1" });
     mocks.fetchSessionAttempts.mockResolvedValue([]);
-    mocks.endPracticeSession.mockResolvedValue(undefined);
+    mocks.endPracticeSession.mockResolvedValue("completed");
     mocks.submitSpellingAttempt.mockImplementation(async (_request, handlers) => {
       handlers?.onMeta?.({ requestId: "request", isCorrect: false, timingMs: 1, targetWordMasked: true }, coaching);
       handlers?.onPrecomputed?.(coaching);
@@ -176,6 +184,40 @@ describe("main application pages", () => {
     expect(screen.getByPlaceholderText("Type your spelling…")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Definition/ }));
     expect(screen.getByText(word.definition)).toBeInTheDocument();
+  });
+
+  it("treats stopping an auto-abandoned session as a normal stale-tab outcome", async () => {
+    mocks.endPracticeSession.mockResolvedValue("already_abandoned");
+    renderPage(<Index />);
+    fireEvent.click(await screen.findByRole("button", { name: /Standard Practice/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Grades 1/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Start Session" }));
+    await screen.findByPlaceholderText("Type your spelling…");
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop Session" }));
+
+    expect(await screen.findByText(
+      "This session had already ended due to inactivity. You can start a new session.",
+    )).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start Session" })).toBeInTheDocument();
+  });
+
+  it("keeps the local session active when ending it fails", async () => {
+    mocks.endPracticeSession.mockRejectedValue(new Error("offline"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    renderPage(<Index />);
+    fireEvent.click(await screen.findByRole("button", { name: /Standard Practice/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Grades 1/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Start Session" }));
+    await screen.findByPlaceholderText("Type your spelling…");
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop Session" }));
+
+    expect(await screen.findByText(
+      "Could not end the session. Please check your connection and try again.",
+    )).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop Session" })).toBeInTheDocument();
+    consoleError.mockRestore();
   });
 
   it("shows a friendly load error and returns to the dashboard", async () => {
@@ -241,7 +283,7 @@ describe("main application pages", () => {
     mocks.fetchSessionAttempts.mockResolvedValue([
       {
         id: "old-1", session_id: "practice-1", user_id: "user-1", target_word: "rhythm", child_attempt: "rythm",
-        is_correct: false, coaching_response: JSON.stringify(coaching), created_at: "2026-07-17T00:00:00Z",
+        is_correct: false, coaching_response: coaching, created_at: "2026-07-17T00:00:00Z",
         word_catalog_entry: { ...word, word: "rhythm" },
       },
       {

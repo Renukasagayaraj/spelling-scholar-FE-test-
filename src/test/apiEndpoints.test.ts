@@ -102,7 +102,7 @@ describe("remaining API endpoints", () => {
       .mockResolvedValueOnce(jsonResponse({ attempts: [{ id: "a1" }] }))
       .mockResolvedValueOnce(jsonResponse({ session }))
       .mockResolvedValueOnce(jsonResponse({ attemptId: "a2" }))
-      .mockResolvedValueOnce(jsonResponse({}));
+      .mockResolvedValueOnce(jsonResponse({ success: true, result: "completed" }));
     vi.stubGlobal("fetch", fetchMock);
     await expect(startPracticeSession({ mode: "standard", level: 2 })).resolves.toMatchObject({ action: "created" });
     await expect(fetchSessionAttempts("s/1")).resolves.toEqual([{ id: "a1" }]);
@@ -114,9 +114,32 @@ describe("remaining API endpoints", () => {
       usedVoiceInput: false, coachingResponse: "{}",
     };
     await expect(recordWordAttempt(attempt)).resolves.toBe("a2");
-    await expect(endPracticeSession({ sessionId: "s/1", totalWordsAttempted: 1, totalCorrect: 0, durationSeconds: 10 }, true)).resolves.toBeUndefined();
+    await expect(endPracticeSession({ sessionId: "s/1", totalWordsAttempted: 1, totalCorrect: 0, durationSeconds: 10 }, true)).resolves.toBe("completed");
     expect(fetchMock.mock.calls[1][0]).toContain("sessionId=s%2F1");
     expect(fetchMock.mock.calls[4][1]).toMatchObject({ keepalive: true });
+  });
+
+  it.each(["already_abandoned", "already_completed"] as const)(
+    "returns the non-error session end result %s",
+    async (result) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ success: true, result })));
+      await expect(endPracticeSession({
+        sessionId: "stale-session",
+        totalWordsAttempted: 1,
+        totalCorrect: 1,
+        durationSeconds: 10,
+      })).resolves.toBe(result);
+    },
+  );
+
+  it("rejects a malformed successful session-end response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ success: true })));
+    await expect(endPracticeSession({
+      sessionId: "session",
+      totalWordsAttempted: 0,
+      totalCorrect: 0,
+      durationSeconds: 0,
+    })).rejects.toThrow("Invalid end practice session response");
   });
 
   it.each([
