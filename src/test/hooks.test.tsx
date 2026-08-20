@@ -126,14 +126,14 @@ describe("useRewards", () => {
 
   it("returns empty stats and records correct, incorrect, badge, and milestone transitions", () => {
     const { result } = renderHook(() => useRewards());
-    expect(result.current.getStats(2)).toEqual({ streak: 0, bestStreak: 0, totalCorrect: 0, badges: [] });
+    expect(result.current.getStats("2")).toEqual({ streak: 0, bestStreak: 0, totalCorrect: 0, badges: [] });
 
     act(() => {
-      result.current.recordCorrect(2);
-      result.current.recordCorrect(2);
-      result.current.recordCorrect(2);
+      result.current.recordCorrect("2");
+      result.current.recordCorrect("2");
+      result.current.recordCorrect("2");
     });
-    expect(result.current.getStats(2)).toMatchObject({ streak: 3, bestStreak: 3, totalCorrect: 3, badges: ["streak3"] });
+    expect(result.current.getStats("2")).toMatchObject({ streak: 3, bestStreak: 3, totalCorrect: 3, badges: ["streak3"] });
     expect(result.current.newBadge?.id).toBe("streak3");
     expect(result.current.milestoneHit).toBe(3);
     expect(audioContext.createOscillator).toHaveBeenCalledTimes(4);
@@ -141,24 +141,24 @@ describe("useRewards", () => {
     act(() => {
       result.current.clearNewBadge();
       result.current.clearMilestone();
-      result.current.recordIncorrect(2);
+      result.current.recordIncorrect("2");
     });
     expect(result.current.newBadge).toBeNull();
     expect(result.current.milestoneHit).toBeNull();
-    expect(result.current.getStats(2).streak).toBe(0);
-    expect(result.current.getStats(2).bestStreak).toBe(3);
-    expect(JSON.parse(localStorage.getItem("spelling-coach-rewards-v1") ?? "{}")[2]).toBeDefined();
+    expect(result.current.getStats("2").streak).toBe(0);
+    expect(result.current.getStats("2").bestStreak).toBe(3);
+    expect(JSON.parse(localStorage.getItem("spelling-coach-rewards-v1") ?? "{}")["2"]).toBeDefined();
   });
 
   it("loads saved state and tolerates malformed storage", () => {
-    localStorage.setItem("spelling-coach-rewards-v1", JSON.stringify({ 1: { streak: 4, bestStreak: 6, totalCorrect: 20, badges: [] } }));
+    localStorage.setItem("spelling-coach-rewards-v1", JSON.stringify({ "1": { streak: 4, bestStreak: 6, totalCorrect: 20, badges: [] } }));
     const saved = renderHook(() => useRewards());
-    expect(saved.result.current.getStats(1).bestStreak).toBe(6);
+    expect(saved.result.current.getStats("1").bestStreak).toBe(6);
     saved.unmount();
 
     localStorage.setItem("spelling-coach-rewards-v1", "not-json");
     const malformed = renderHook(() => useRewards());
-    expect(malformed.result.current.getStats(1).totalCorrect).toBe(0);
+    expect(malformed.result.current.getStats("1").totalCorrect).toBe(0);
   });
 
   it("defines every badge at its exact boundary", () => {
@@ -171,11 +171,11 @@ describe("useRewards", () => {
     Object.defineProperty(window, "AudioContext", { configurable: true, value: undefined });
     const { result } = renderHook(() => useRewards());
     act(() => {
-      result.current.recordCorrect(1);
-      result.current.recordCorrect(1);
-      result.current.recordCorrect(1);
+      result.current.recordCorrect("1");
+      result.current.recordCorrect("1");
+      result.current.recordCorrect("1");
     });
-    expect(result.current.getStats(1).streak).toBe(3);
+    expect(result.current.getStats("1").streak).toBe(3);
   });
 });
 

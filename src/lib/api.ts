@@ -371,6 +371,132 @@ export interface SpellingCoachStreamHandlers {
   onDone?: (result: CoachingResponse, done: SpellingCoachStreamDone) => void;
 }
 
+export interface PracticeSessionRecord {
+  id: string;
+  user_id?: string;
+  mode: string;
+  status?: "active" | "completed" | "abandoned";
+  origin_language?: string | null;
+  custom_list_id?: string | null;
+  custom_list_name?: string | null;
+  session_started_at: string;
+  session_ended_at: string | null;
+  total_words_attempted?: number;
+  total_correct?: number;
+  accuracy_percentage?: number;
+  duration_seconds?: number | null;
+  created_at?: string;
+  session_config?: unknown;
+  session_state?: unknown;
+}
+
+export interface WordAttemptRecord {
+  id: string;
+  session_id: string;
+  user_id?: string | null;
+  target_word: string;
+  child_attempt: string;
+  is_correct: boolean;
+  level?: number;
+  definition_viewed?: boolean;
+  example_viewed?: boolean;
+  origin_viewed?: boolean;
+  part_of_speech_viewed?: boolean;
+  repeat_word_count?: number;
+  used_voice_input?: boolean;
+  created_at: string;
+}
+
+export interface DbWordAttempt {
+  id: string;
+  session_id: string;
+  user_id: string;
+  target_word: string;
+  child_attempt: string;
+  is_correct: boolean;
+  level?: number;
+  definition_viewed?: boolean;
+  example_viewed?: boolean;
+  origin_viewed?: boolean;
+  part_of_speech_viewed?: boolean;
+  repeat_word_count?: number;
+  used_voice_input?: boolean;
+  coaching_response?: string | null;
+  created_at: string;
+  word_catalog_entry?: Partial<WordData> | null;
+}
+
+export type ReportDateRange = "7d" | "30d" | "90d" | "all";
+
+export type ReportSectionResponse<Section extends ReportSection> =
+  Pick<ReportsMock, Section> & { pagination?: ReportPagination };
+
+export async function fetchReports<Section extends ReportSection>(
+  range: ReportDateRange,
+  section: Section,
+  page = 1,
+): Promise<ReportSectionResponse<Section>> {
+  const params = new URLSearchParams({
+    range,
+    section,
+    page: String(page),
+    pageSize: "10",
+    locale: navigator.language || "en-US",
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+  });
+  const res = await fetch(`${BASE_URL}/api/reports?${params}`, {
+    headers: await authHeaders(),
+  });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok) throw new Error("Failed to fetch report data");
+  return res.json();
+}
+export type StartPracticeSessionResult =
+  | { action: "created"; sessionId: string }
+  | { action: "resume_existing"; sessionId: string }
+  | {
+      action: "active_session_conflict";
+      activeSessionId: string;
+      activeMode: string;
+    };
+
+export interface StartPracticeSessionRequest {
+  mode: string;
+  level?: number;
+  originLanguage?: string;
+  customListId?: string;
+  customListName?: string;
+  forceCloseCurrent?: boolean;
+}
+
+export interface RecordAttemptBody {
+  sessionId: string;
+  targetWord: string;
+  childAttempt: string;
+  isCorrect: boolean;
+  level: number;
+  mode: string;
+  definitionViewed: boolean;
+  exampleViewed: boolean;
+  originViewed: boolean;
+  partOfSpeechViewed: boolean;
+  repeatWordCount: number;
+  usedVoiceInput: boolean;
+  coachingResponse: string;
+}
+
+export interface EndSessionBody {
+  sessionId: string;
+  totalWordsAttempted: number;
+  totalCorrect: number;
+  durationSeconds: number;
+}
+
+export type EndSessionResult =
+  | "completed"
+  | "already_abandoned"
+  | "already_completed";
+
 export async function checkHealth(): Promise<{ status: string }> {
   const res = await fetch(`${BASE_URL}/api/health`);
   if (!res.ok) throw new Error("Health check failed");
@@ -480,6 +606,107 @@ export async function fetchNextWord(
     }
     throw err;
   }
+}
+
+export async function startPracticeSession(
+  body: StartPracticeSessionRequest,
+): Promise<StartPracticeSessionResult> {
+  const res = await fetch(`${BASE_URL}/api/sessions/start`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(await practiceAccessHeaders()),
+    },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 402) throw new FreeAttemptLimitError(body.error);
+    throw new Error(body.error || "Failed to start practice session");
+  }
+  return res.json();
+}
+
+export async function fetchPracticeSession(
+  sessionId: string,
+): Promise<PracticeSessionRecord | null> {
+  if (USE_MOCK_FALLBACK) {
+    return null;
+  }
+  const res = await fetch(
+    `${BASE_URL}/api/sessions/current?sessionId=${encodeURIComponent(sessionId)}`,
+    { headers: await practiceAccessHeaders() },
+  );
+  if (res.status === 401) await handle401();
+  if (!res.ok) throw new Error("Failed to refresh practice session");
+  const data = await res.json();
+  return data.session;
+}
+
+export async function fetchSessionAttempts(sessionId: string): Promise<DbWordAttempt[]> {
+  if (USE_MOCK_FALLBACK) {
+    return [];
+  }
+  const res = await fetch(
+    `${BASE_URL}/api/sessions/attempts?sessionId=${encodeURIComponent(sessionId)}`,
+    { headers: await practiceAccessHeaders() },
+  );
+  if (res.status === 401) await handle401();
+  if (!res.ok) throw new Error("Failed to fetch session attempts");
+  const data = await res.json();
+  return data.attempts;
+}
+
+export async function recordWordAttempt(body: RecordAttemptBody): Promise<string> {
+  const res = await fetch(`${BASE_URL}/api/sessions/attempts`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(await practiceAccessHeaders()),
+    },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) await handle401();
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 402) throw new FreeAttemptLimitError(data.error);
+    if (res.status === 409 && data.code === "PRACTICE_SESSION_NOT_ACTIVE") {
+      throw new InactivePracticeSessionError(data.error);
+    }
+    throw new Error(data.error || "Failed to record word attempt");
+  }
+  const data = await res.json();
+  return data.attemptId;
+}
+
+export async function endPracticeSession(
+  body: EndSessionBody,
+  keepalive = false,
+): Promise<EndSessionResult> {
+  const res = await fetch(`${BASE_URL}/api/sessions/end`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(await practiceAccessHeaders()),
+    },
+    body: JSON.stringify(body),
+    keepalive,
+  });
+  if (res.status === 401) await handle401();
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to end practice session");
+  }
+  const data = await res.json();
+  if (
+    data.result !== "completed" &&
+    data.result !== "already_abandoned" &&
+    data.result !== "already_completed"
+  ) {
+    throw new Error("Invalid end practice session response");
+  }
+  return data.result;
 }
 
 // Module-level promise caches. These endpoints return data that rarely changes
@@ -646,8 +873,12 @@ const STREAM_SECTION_KEYS: SpellingCoachStreamSection[] = [
 ];
 
 function emptyRuntimeSections(isCorrect = false): SpellingCoachRuntimeSections {
-  const status: SpellingCoachRuntimeSectionStatus = isCorrect ? "complete" : "idle";
   return STREAM_SECTION_KEYS.reduce((sections, section) => {
+    // For correct answers, miss_analysis and explanation are naturally skipped, so they start as complete.
+    // Memory tip and short_feedback should start as idle so they show a loader while waiting.
+    const isSkippedCorrectSection = isCorrect && (section === "miss_analysis" || section === "explanation");
+    const status: SpellingCoachRuntimeSectionStatus = isSkippedCorrectSection ? "complete" : "idle";
+
     sections[section] = {
       status,
       text: "",
@@ -882,13 +1113,13 @@ function createStreamAssembler(handlers: SpellingCoachStreamHandlers) {
           missAnalysis: meta.missAnalysis,
         };
       }
-      const metaExtra = meta as Record<string, unknown>;
-      if (meta.sayAloudTip || metaExtra["shortFeedback"]) {
+      const metaExtra = meta as unknown as Record<string, unknown>;
+      if (metaExtra["sayAloudTip"] || metaExtra["shortFeedback"]) {
         result = {
           ...result,
           coachingText: {
             ...result.coachingText,
-            ...(meta.sayAloudTip ? { sayAloudTip: meta.sayAloudTip } : {}),
+            ...(metaExtra["sayAloudTip"] ? { sayAloudTip: metaExtra["sayAloudTip"] as string } : {}),
             ...(metaExtra["shortFeedback"] ? { shortFeedback: metaExtra["shortFeedback"] as string } : {}),
           },
         };
@@ -1308,159 +1539,6 @@ export async function updateUserProfile(updates: Partial<Omit<UserProfile, "id" 
   return data.profile;
 }
 
-export interface PracticeSessionRecord {
-  id: string;
-  user_id?: string;
-  mode: string;
-  status?: "active" | "completed" | "abandoned";
-  origin_language?: string | null;
-  custom_list_id?: string | null;
-  custom_list_name?: string | null;
-  session_started_at: string;
-  session_ended_at: string | null;
-  total_words_attempted?: number;
-  total_correct?: number;
-  accuracy_percentage?: number;
-  duration_seconds?: number | null;
-  created_at?: string;
-  session_config?: unknown;
-  session_state?: unknown;
-}
-
-export interface WordAttemptRecord {
-  id: string;
-  session_id: string;
-  user_id?: string | null;
-  target_word: string;
-  child_attempt: string;
-  is_correct: boolean;
-  level?: number;
-  definition_viewed?: boolean;
-  example_viewed?: boolean;
-  origin_viewed?: boolean;
-  part_of_speech_viewed?: boolean;
-  repeat_word_count?: number;
-  used_voice_input?: boolean;
-  created_at: string;
-}
-
-export type StartPracticeSessionResult =
-  | { action: "created"; sessionId: string }
-  | { action: "resume_existing"; sessionId: string }
-  | {
-      action: "active_session_conflict";
-      activeSessionId: string;
-      activeMode: string;
-    };
-
-export interface StartPracticeSessionRequest {
-  mode: string;
-  level?: number;
-  originLanguage?: string;
-  customListId?: string;
-  // customListName?: string;
-  forceCloseCurrent?: boolean;
-}
-
-export async function startPracticeSession(
-  body: StartPracticeSessionRequest,
-): Promise<StartPracticeSessionResult> {
-  const res = await fetch(`${BASE_URL}/api/sessions/start`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(await practiceAccessHeaders()),
-    },
-    body: JSON.stringify(body),
-  });
-  if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    if (res.status === 402) throw new FreeAttemptLimitError(body.error);
-    throw new Error(body.error || "Failed to start practice session");
-  }
-  return res.json();
-}
-
-export interface RecordAttemptBody {
-  sessionId: string;
-  targetWord: string;
-  childAttempt: string;
-  isCorrect: boolean;
-  level: number;
-  mode: string;
-  definitionViewed: boolean;
-  exampleViewed: boolean;
-  originViewed: boolean;
-  partOfSpeechViewed: boolean;
-  repeatWordCount: number;
-  usedVoiceInput: boolean;
-  coachingResponse: string;
-}
-
-export async function recordWordAttempt(body: RecordAttemptBody): Promise<string> {
-  const res = await fetch(`${BASE_URL}/api/sessions/attempts`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(await practiceAccessHeaders()),
-    },
-    body: JSON.stringify(body),
-  });
-  if (res.status === 401) await handle401();
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    if (res.status === 402) throw new FreeAttemptLimitError(data.error);
-    if (res.status === 409 && data.code === "PRACTICE_SESSION_NOT_ACTIVE") {
-      throw new InactivePracticeSessionError(data.error);
-    }
-    throw new Error(data.error || "Failed to record word attempt");
-  }
-  const data = await res.json();
-  return data.attemptId;
-}
-
-export interface EndSessionBody {
-  sessionId: string;
-  totalWordsAttempted: number;
-  totalCorrect: number;
-  durationSeconds: number;
-}
-
-export type EndSessionResult =
-  | "completed"
-  | "already_abandoned"
-  | "already_completed";
-
-export async function endPracticeSession(
-  body: EndSessionBody,
-  keepalive = false,
-): Promise<EndSessionResult> {
-  const res = await fetch(`${BASE_URL}/api/sessions/end`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(await practiceAccessHeaders()),
-    },
-    body: JSON.stringify(body),
-    keepalive,
-  });
-  if (res.status === 401) await handle401();
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to end practice session");
-  }
-  const data = await res.json();
-  if (
-    data.result !== "completed" &&
-    data.result !== "already_abandoned" &&
-    data.result !== "already_completed"
-  ) {
-    throw new Error("Invalid end practice session response");
-  }
-  return data.result;
-}
-
 export interface DbUserStats {
   mode: string;
   origin_language?: string | null;
@@ -1483,81 +1561,6 @@ export async function fetchUserStatistics(): Promise<DbUserStats[]> {
   if (!res.ok) throw new Error("Failed to fetch user statistics");
   const data = await res.json();
   return data.stats;
-}
-
-export interface DbWordAttempt {
-  id: string;
-  session_id: string;
-  user_id?: string | null;
-  target_word: string;
-  child_attempt: string;
-  is_correct: boolean;
-  level?: number;
-  definition_viewed?: boolean;
-  example_viewed?: boolean;
-  origin_viewed?: boolean;
-  part_of_speech_viewed?: boolean;
-  repeat_word_count?: number;
-  used_voice_input?: boolean;
-  coaching_response?: CoachingResponse | string | null;
-  created_at: string;
-  word_catalog_entry?: Partial<WordData> | null;
-}
-
-export type ReportDateRange = "7d" | "30d" | "90d" | "all";
-
-export type ReportSectionResponse<Section extends ReportSection> =
-  Pick<ReportsMock, Section> & { pagination?: ReportPagination };
-
-export async function fetchReports<Section extends ReportSection>(
-  range: ReportDateRange,
-  section: Section,
-  page = 1,
-): Promise<ReportSectionResponse<Section>> {
-  const params = new URLSearchParams({
-    range,
-    section,
-    page: String(page),
-    pageSize: "10",
-    locale: navigator.language || "en-US",
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-  });
-  const res = await fetch(`${BASE_URL}/api/reports?${params}`, {
-    headers: await authHeaders(),
-  });
-  if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new Error("Failed to fetch report data");
-  return res.json();
-}
-
-export async function fetchSessionAttempts(sessionId: string): Promise<DbWordAttempt[]> {
-  if (USE_MOCK_FALLBACK) {
-    return [];
-  }
-  const res = await fetch(
-    `${BASE_URL}/api/sessions/attempts?sessionId=${encodeURIComponent(sessionId)}`,
-    { headers: await practiceAccessHeaders() },
-  );
-  if (res.status === 401) await handle401();
-  if (!res.ok) throw new Error("Failed to fetch session attempts");
-  const data = await res.json();
-  return data.attempts;
-}
-
-export async function fetchPracticeSession(
-  sessionId: string,
-): Promise<PracticeSessionRecord | null> {
-  if (USE_MOCK_FALLBACK) {
-    return null;
-  }
-  const res = await fetch(
-    `${BASE_URL}/api/sessions/current?sessionId=${encodeURIComponent(sessionId)}`,
-    { headers: await practiceAccessHeaders() },
-  );
-  if (res.status === 401) await handle401();
-  if (!res.ok) throw new Error("Failed to refresh practice session");
-  const data = await res.json();
-  return data.session;
 }
 
 // ---------- Word search + word detail ----------

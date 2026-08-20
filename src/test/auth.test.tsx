@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   signOut: vi.fn(),
   invalidateCustomListsCache: vi.fn(),
   fetchSubscriptionStatus: vi.fn(),
+  fetchUserProfile: vi.fn(),
 }));
 
 vi.mock("@/lib/supabase", () => ({
@@ -34,6 +35,7 @@ vi.mock("@/lib/supabase", () => ({
 vi.mock("@/lib/api", () => ({
   invalidateCustomListsCache: mocks.invalidateCustomListsCache,
   fetchSubscriptionStatus: mocks.fetchSubscriptionStatus,
+  fetchUserProfile: mocks.fetchUserProfile,
 }));
 
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
@@ -50,6 +52,7 @@ describe("AuthProvider", () => {
     mocks.signInWithOAuth.mockResolvedValue({ error: null });
     mocks.signOut.mockResolvedValue(undefined);
     mocks.fetchSubscriptionStatus.mockResolvedValue({ subscribed: true, currentPeriodEnd: 123, cancelAtPeriodEnd: true });
+    mocks.fetchUserProfile.mockResolvedValue({ id: "user-1", email: "learner@example.com", name: "Learner" });
   });
 
   afterEach(() => vi.restoreAllMocks());

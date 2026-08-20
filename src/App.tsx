@@ -4,6 +4,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
+import { TawkChat } from "@/components/TawkChat";
 import Index from "./pages/Index.tsx";
 import Landing from "./pages/Landing.tsx";
 import MockBee from "./pages/MockBee.tsx";
@@ -26,6 +27,7 @@ const RootRoute = () => {
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <AuthProvider>
+      <TawkChat />
       <TooltipProvider>
         <Toaster />
         <Sonner />

@@ -176,6 +176,7 @@ describe("interactive display components", () => {
         primaryErrorFocus: "",
         likelyWrongWordInterpretation: false,
         usedMeaningDisambiguationWell: false,
+        errorTypeEvidence: {},
       },
       coachingText: {
         shortFeedback: "",
@@ -184,6 +185,12 @@ describe("interactive display components", () => {
         sayAloudTip: "",
       },
       streamSections: {
+        short_feedback: {
+          status: "idle" as const,
+          text: "",
+          timingMs: 0,
+          error: null,
+        },
         miss_analysis: {
           status: "streaming" as const,
           text: "The middle sound is still streaming",
@@ -208,7 +215,7 @@ describe("interactive display components", () => {
     const { rerender } = render(<CoachingResult result={streaming} level={2} />);
     expect(screen.getByText("The middle sound is still streaming")).toBeInTheDocument();
     expect(screen.getByText("Explanation")).toBeInTheDocument();
-    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    expect(screen.getAllByText("Loading...")[0]).toBeInTheDocument();
     expect(screen.getByText("This section could not be loaded.")).toBeInTheDocument();
 
     rerender(
@@ -222,6 +229,12 @@ describe("interactive display components", () => {
           },
           streamSections: {
             ...streaming.streamSections,
+            short_feedback: {
+              status: "complete" as const,
+              text: "",
+              timingMs: 0,
+              error: null,
+            },
             explanation: {
               status: "complete" as const,
               text: "Use rhy, then thm.",

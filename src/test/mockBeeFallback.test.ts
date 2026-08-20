@@ -28,7 +28,7 @@ describe("mock bee in-memory fallback", () => {
   it("creates, restores, advances, completes, and reviews a session without network calls", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    const session = await api.createMockBeeRound(request);
+    const session = await api.createMockBeeRound(request) as MockBeeApi.MockBeeSession;
     expect(session.id).toMatch(/^mock_/);
     expect(session.currentChallenge).toMatchObject({ turnIndex: 0, turnNumber: 1 });
     expect(session.currentChallenge?.supports.exampleSentence).toContain("___");
@@ -60,7 +60,7 @@ describe("mock bee in-memory fallback", () => {
   });
 
   it("uses the level-three no-reveal policy", async () => {
-    const session = await api.createMockBeeRound({ ...request, level: "3" });
+    const session = await api.createMockBeeRound({ ...request, level: "3" }) as MockBeeApi.MockBeeSession;
     const response = await api.submitMockBeeAttempt(session.id, {
       childAttempt: "wrong",
       supportsUsed: { definitionViewed: false, exampleViewed: false, originViewed: false },
@@ -70,7 +70,7 @@ describe("mock bee in-memory fallback", () => {
   });
 
   it("returns silent pronunciation audio for an active challenge", async () => {
-    const session = await api.createMockBeeRound(request);
+    const session = await api.createMockBeeRound(request) as MockBeeApi.MockBeeSession;
     await expect(api.fetchMockBeeCurrentWordAudio(session.id)).resolves.toBe("blob:silent");
   });
 

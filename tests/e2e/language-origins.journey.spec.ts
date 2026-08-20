@@ -1,7 +1,22 @@
 import { test, expect, Page } from "@playwright/test";
+import { E2E_EMAIL, E2E_PASSWORD } from "./constants";
 
-const E2E_EMAIL = process.env.E2E_USER_EMAIL || "renuka.sagayaraj@gbritsolutions.com";
-const E2E_PASSWORD = process.env.E2E_USER_PASSWORD || "renuka@1234";
+import { getWordByDefinition } from "./dictionary";
+
+async function getTargetWord(page: Page): Promise<string> {
+  await page.getByRole("button", { name: /Show Debug/ }).click();
+  const preText = await page.locator("pre").first().innerText();
+  const wordData = JSON.parse(preText);
+  await page.getByRole("button", { name: /Hide Debug/ }).click();
+  
+  if (wordData.word) return wordData.word;
+  
+  const def = wordData.definition || "";
+  const word = getWordByDefinition(def);
+  if (word) return word;
+  
+  throw new Error("Target word not found in network, and definition unmatched: " + def);
+}
 
 async function prepareSubscription(page: Page) {
   await page.route("**/api/stripe/subscription-status", (route) =>
@@ -12,7 +27,7 @@ async function prepareSubscription(page: Page) {
     })
   );
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /Master every word/ })).toBeVisible();
+  await expect(page.getByText(/Master every word/i)).toBeVisible();
 
   await page.addLocatorHandler(
     page.getByRole("alertdialog", { name: "Active Session In Progress" }),
@@ -28,18 +43,10 @@ async function prepareSubscription(page: Page) {
     await expect(page.getByRole("dialog")).toBeVisible();
     await page.locator('input[type="email"]').fill(E2E_EMAIL);
     await page.locator('input[type="password"]').fill(E2E_PASSWORD);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.locator('form').getByRole("button", { name: "Sign in", exact: true }).click();
   }
 
   await expect(page.getByRole("button", { name: "Premium" })).toBeVisible();
-}
-
-async function getTargetWord(page: Page): Promise<string> {
-  const hiddenWord = page.getByTestId("hidden-target-word");
-  await expect(hiddenWord).toBeAttached();
-  const word = await hiddenWord.textContent();
-  if (!word) throw new Error("Hidden target word not found");
-  return word.trim();
 }
 
 test.describe("Journey 4: Language Origins Practice Flow", () => {
@@ -59,7 +66,7 @@ test.describe("Journey 4: Language Origins Practice Flow", () => {
 
     // Return to dashboard before starting loop
     await page.getByRole("button", { name: "Go Back", exact: true }).click();
-    await expect(page.getByRole("heading", { name: /Master every word/ })).toBeVisible();
+    await expect(page.getByText(/Master every word/i)).toBeVisible();
 
     for (let i = 0; i < testCount; i++) {
       // 1. Open Language Origins panel
@@ -97,12 +104,19 @@ test.describe("Journey 4: Language Origins Practice Flow", () => {
       await page.getByRole("button", { name: "Submit" }).click();
       await expect(page.getByText("Not quite!")).toBeVisible();
 
-      // AI streaming feedback sections (Explanation & Memory Tip) are hidden in Level 1 (Language Origins)
+      // Verify AI streaming feedback sections
+      await expect(page.getByText("Explanation")).toBeVisible();
+      await expect(page.getByText("Memory Tip")).toBeVisible();
 
-      // 7. Finish session and return to Dashboard (click twice due to hierarchical nav)
+      // 7. Finish session and return to Dashboard
       await page.getByRole("button", { name: "Go Back", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "Words by Language Origin" })).toBeVisible();
+      
+      const endResponse = page.waitForResponse(res => res.url().includes('/api/sessions/end') && res.request().method() === 'POST').catch(() => {});
       await page.getByRole("button", { name: "Go Back", exact: true }).click();
-      await expect(page.getByRole("heading", { name: /Master every word/ })).toBeVisible();
+      await endResponse;
+      
+      await expect(page.getByText(/Master every word/i)).toBeVisible();
     }
   });
 });

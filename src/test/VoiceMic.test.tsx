@@ -95,10 +95,10 @@ describe("VoiceMic", () => {
 
   it("honors disabled state and starts/stops a supported recording", async () => {
     const attempt = vi.fn();
-    const view = render(<VoiceMic targetWord="friend" disabled onSpellingAttempt={attempt} />);
+    const view = render(<VoiceMic challenge={{ challengeId: "c1", sessionId: "s1" }} disabled onSpellingAttempt={attempt} />);
     fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
     expect(getUserMedia).not.toHaveBeenCalled();
-    view.rerender(<VoiceMic targetWord="friend" onSpellingAttempt={attempt} />);
+    view.rerender(<VoiceMic challenge={{ challengeId: "c1", sessionId: "s1" }} onSpellingAttempt={attempt} />);
 
     await recordOnce();
     await waitFor(() => expect(attempt).toHaveBeenCalledWith("friend"));
@@ -110,7 +110,7 @@ describe("VoiceMic", () => {
 
   it("uses the recorder default MIME type when webm is unsupported", async () => {
     FakeMediaRecorder.isTypeSupported.mockReturnValueOnce(false);
-    render(<VoiceMic targetWord="friend" onSpellingAttempt={vi.fn()} />);
+    render(<VoiceMic challenge={{ challengeId: "c1", sessionId: "s1" }} onSpellingAttempt={vi.fn()} />);
     await recordOnce();
     await waitFor(() => expect(api.transcribeAudio).toHaveBeenCalled());
     expect(FakeMediaRecorder.latest?.mimeType).toBe("");
@@ -119,7 +119,7 @@ describe("VoiceMic", () => {
   it("handles empty transcripts, empty parsed attempts, and unknown intent", async () => {
     const attempt = vi.fn();
     api.transcribeAudio.mockResolvedValueOnce("   ");
-    const view = render(<VoiceMic targetWord="friend" onSpellingAttempt={attempt} />);
+    const view = render(<VoiceMic challenge={{ challengeId: "c1", sessionId: "s1" }} onSpellingAttempt={attempt} />);
     await recordOnce();
     expect(await screen.findByText("Didn't catch that — try again?")).toBeInTheDocument();
 
@@ -139,7 +139,7 @@ describe("VoiceMic", () => {
     const support = vi.fn();
     api.transcribeAudio.mockResolvedValueOnce("definition please");
     api.voiceRespond.mockResolvedValueOnce({ intent: "definition", displayText: "A trusted person" });
-    render(<VoiceMic targetWord="friend" onSpellingAttempt={vi.fn()} onSupportResponse={support} />);
+    render(<VoiceMic challenge={{ challengeId: "c1", sessionId: "s1" }} onSpellingAttempt={vi.fn()} onSupportResponse={support} />);
     await recordOnce();
     await waitFor(() => expect(support).toHaveBeenCalledWith(expect.objectContaining({ intent: "definition" })));
     expect(screen.getByText("Heard: definition please")).toBeInTheDocument();
@@ -149,7 +149,7 @@ describe("VoiceMic", () => {
   it("plays support audio and cleans it up when playback ends", async () => {
     api.transcribeAudio.mockResolvedValueOnce("origin please");
     api.voiceRespond.mockResolvedValueOnce({ intent: "origin", audioBase64: "AA==", audioMimeType: "audio/wav" });
-    const view = render(<VoiceMic targetWord="friend" onSpellingAttempt={vi.fn()} />);
+    const view = render(<VoiceMic challenge={{ challengeId: "c1", sessionId: "s1" }} onSpellingAttempt={vi.fn()} />);
     await recordOnce();
     await waitFor(() => expect(api.base64ToBlob).toHaveBeenCalledWith("AA==", "audio/wav"));
     expect(createObjectURL).toHaveBeenCalled();
@@ -164,7 +164,7 @@ describe("VoiceMic", () => {
   it("uses the default audio MIME and recovers from playback rejection or error", async () => {
     installAudio(() => Promise.reject(new Error("autoplay")));
     api.voiceRespond.mockResolvedValueOnce({ intent: "definition", audioBase64: "AA==" });
-    render(<VoiceMic targetWord="friend" onSpellingAttempt={vi.fn()} />);
+    render(<VoiceMic challenge={{ challengeId: "c1", sessionId: "s1" }} onSpellingAttempt={vi.fn()} />);
     await recordOnce();
     await waitFor(() => expect(api.base64ToBlob).toHaveBeenCalledWith("AA==", "audio/mpeg"));
     await waitFor(() => expect(revokeObjectURL).toHaveBeenCalled());
@@ -180,7 +180,7 @@ describe("VoiceMic", () => {
   it("reports microphone and processing failures and returns to idle", async () => {
     vi.useFakeTimers();
     getUserMedia.mockRejectedValueOnce(new Error("denied"));
-    render(<VoiceMic targetWord="friend" onSpellingAttempt={vi.fn()} />);
+    render(<VoiceMic challenge={{ challengeId: "c1", sessionId: "s1" }} onSpellingAttempt={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
     await act(async () => Promise.resolve());
     expect(screen.getByText("Microphone unavailable.")).toBeInTheDocument();
@@ -198,7 +198,7 @@ describe("VoiceMic", () => {
 
   it("stops tracks and active playback on unmount", async () => {
     api.voiceRespond.mockResolvedValueOnce({ intent: "definition", audioBase64: "AA==" });
-    const view = render(<VoiceMic targetWord="friend" onSpellingAttempt={vi.fn()} />);
+    const view = render(<VoiceMic challenge={{ challengeId: "c1", sessionId: "s1" }} onSpellingAttempt={vi.fn()} />);
     await recordOnce();
     await waitFor(() => expect(latestAudio?.play).toHaveBeenCalled());
     view.unmount();
@@ -209,14 +209,14 @@ describe("VoiceMic", () => {
 
   it("continues when onboarding storage is unavailable", async () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); });
-    render(<VoiceMic targetWord="friend" onSpellingAttempt={vi.fn()} />);
+    render(<VoiceMic challenge={{ challengeId: "c1", sessionId: "s1" }} onSpellingAttempt={vi.fn()} />);
     await recordOnce();
     expect(await screen.findByText("Heard: friend")).toBeInTheDocument();
   });
 
   it("falls back to showing onboarding when storage reads are blocked", () => {
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });
-    render(<VoiceMic targetWord="friend" onSpellingAttempt={vi.fn()} />);
+    render(<VoiceMic challenge={{ challengeId: "c1", sessionId: "s1" }} onSpellingAttempt={vi.fn()} />);
     expect(screen.getByText("Ask for a hint or spell the word out loud.")).toBeInTheDocument();
   });
 
@@ -249,7 +249,7 @@ describe("VoiceMic", () => {
     vi.spyOn(performance, "now").mockImplementation(() => now);
 
     const attempt = vi.fn();
-    render(<VoiceMic targetWord="friend" onSpellingAttempt={attempt} />);
+    render(<VoiceMic challenge={{ challengeId: "c1", sessionId: "s1" }} onSpellingAttempt={attempt} />);
     fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
     await screen.findByRole("button", { name: "Stop recording" });
 
@@ -278,7 +278,7 @@ describe("VoiceMic", () => {
     vi.stubGlobal("cancelAnimationFrame", vi.fn());
 
     const attempt = vi.fn();
-    render(<VoiceMic targetWord="friend" onSpellingAttempt={attempt} />);
+    render(<VoiceMic challenge={{ challengeId: "c1", sessionId: "s1" }} onSpellingAttempt={attempt} />);
     fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
     await act(async () => Promise.resolve());
     expect(screen.getByRole("button", { name: "Stop recording" })).toBeInTheDocument();

@@ -1,10 +1,9 @@
 import { test, expect, Page } from "@playwright/test";
-
-const E2E_EMAIL = process.env.E2E_USER_EMAIL || "renuka.sagayaraj@gbritsolutions.com";
-const E2E_PASSWORD = process.env.E2E_USER_PASSWORD || "renuka@1234";
+import { E2E_EMAIL, E2E_PASSWORD } from "./constants";
 
 async function prepareSubscription(page: Page) {
-  let customLists: any[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const customLists: any[] = [];
   let importFileCallCount = 0;
 
   await page.route("**/api/custom-lists", async (route) => {
@@ -255,7 +254,7 @@ async function prepareSubscription(page: Page) {
     })
   );
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /Master every word/ })).toBeVisible();
+  await expect(page.getByText(/Master every word/i)).toBeVisible();
 
   await page.addLocatorHandler(
     page.getByRole("alertdialog", { name: "Active Session In Progress" }),
@@ -271,18 +270,34 @@ async function prepareSubscription(page: Page) {
     await expect(page.getByRole("dialog")).toBeVisible();
     await page.locator('input[type="email"]').fill(E2E_EMAIL);
     await page.locator('input[type="password"]').fill(E2E_PASSWORD);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.locator('form').getByRole("button", { name: "Sign in", exact: true }).click();
   }
 
   await expect(page.getByRole("button", { name: "Premium" })).toBeVisible();
 }
 
+let _capturedWord: string | null = null;
+
+async function initWordCapture(page: Page): Promise<void> {
+  _capturedWord = null;
+  await page.route('**/api/words/next**', async (route) => {
+    const response = await route.fetch();
+    try {
+      const body = await response.json();
+      if (body && body.word) _capturedWord = body.word;
+    } catch { /* ignore */ }
+    await route.fulfill({ response });
+  });
+}
+
 async function getTargetWord(page: Page): Promise<string> {
-  const hiddenWord = page.getByTestId("hidden-target-word");
-  await expect(hiddenWord).toBeAttached();
-  const word = await hiddenWord.textContent();
-  if (!word) throw new Error("Hidden target word not found");
-  return word.trim();
+  _capturedWord = null;
+  const start = Date.now();
+  while (!_capturedWord && Date.now() - start < 15000) {
+    await page.waitForTimeout(200);
+  }
+  if (!_capturedWord) throw new Error('Timed out waiting for word from /api/words/next');
+  return _capturedWord;
 }
 
 const textListName = "Journey Manual List";
@@ -346,8 +361,8 @@ test.describe("Journey 3: Custom Word Lists & File Import", () => {
     await page.getByRole("button", { name: `Practice "${textListName}"` }).click();
     await expect(page.getByRole("button", { name: "Hear the Word" })).toBeVisible();
 
-    // 8. Correct Spelling Flow
-    const word1 = await getTargetWord(page);
+    // 8. Correct Spelling Flow - mock returns 'friend' as first word
+    const word1 = "friend";
     await page.getByPlaceholder("Type your spelling…").fill(word1);
     await page.getByRole("button", { name: "Submit" }).click();
     await expect(page.getByText("Correct!")).toBeVisible();
@@ -356,8 +371,8 @@ test.describe("Journey 3: Custom Word Lists & File Import", () => {
     await page.getByRole("button", { name: "Next Word" }).click();
     await expect(page.getByRole("button", { name: "Hear the Word" })).toBeVisible();
 
-    const word2 = await getTargetWord(page);
-    const wrongSpelling = word2.toLowerCase() === "incorrectword" ? "stillwrong" : "incorrectword";
+    // mock returns 'school' as second word - use intentionally wrong spelling to test AI feedback
+    const wrongSpelling = "incorrectword";
     await page.getByPlaceholder("Type your spelling…").fill(wrongSpelling);
     await page.getByRole("button", { name: "Submit" }).click();
     await expect(page.getByText("Not quite!")).toBeVisible();
@@ -366,9 +381,8 @@ test.describe("Journey 3: Custom Word Lists & File Import", () => {
     await expect(page.getByText("Explanation")).toBeVisible();
     await expect(page.getByText("Memory Tip")).toBeVisible();
 
-    // 10. Return to Dashboard cleanly (click twice due to hierarchical nav)
+    // 10. Return to Word Lists panel cleanly (custom practice returns to list panel, not dashboard)
     await page.getByRole("button", { name: "Go Back", exact: true }).click();
-    await page.getByRole("button", { name: "Go Back", exact: true }).click();
-    await expect(page.getByRole("heading", { name: /Master every word/ })).toBeVisible();
+    await expect(page.getByText("Your Word Lists")).toBeVisible();
   });
 });

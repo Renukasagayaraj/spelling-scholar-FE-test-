@@ -19,14 +19,6 @@ Sentry.init({
 import { supabase } from "@/lib/supabase";
 (window as any).supabase = supabase;
 
-// Inject Tidio script
-(function() {
-  const script = document.createElement("script");
-  script.src = `//code.tidio.co/${import.meta.env.VITE_TIDIO_TRACK_ID}.js`;
-  script.async = true;
-  document.body.appendChild(script);
-})();
-
 createRoot(document.getElementById("root")!).render(
   <>
     <App />

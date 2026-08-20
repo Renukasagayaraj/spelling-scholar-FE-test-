@@ -26,6 +26,7 @@ import {
   submitAndRecordSpellingAttempt,
   fetchPronunciationAudio,
   startPracticeSession,
+  recordWordAttempt,
   endPracticeSession,
   fetchUserStatistics,
   fetchGuestUsage,
@@ -670,7 +671,7 @@ export default function Index() {
   // Recover active session on page reload/startup
   useEffect(() => {
     if (authLoading) return;
-
+    
     const saved = localStorage.getItem("active_session_recovery");
     if (saved) {
       void (async () => {
@@ -732,7 +733,6 @@ export default function Index() {
               setForeignPracticeActive(savedForeignPracticeActive ?? true);
             }
             setSessionStartTime(start);
-            console.log("Recovered active session:", { id, restoredMode, start });
             const attempts = await fetchSessionAttempts(id);
             if (attempts && attempts.length > 0) {
               const historyEntries = attempts.map(historyEntryFromAttempt);
@@ -752,10 +752,10 @@ export default function Index() {
               setSessionCorrectCount(
                 historyEntries.filter((entry) => entry.result?.correctness?.isCorrect).length,
               );
-              console.log("Recovered session history:", historyEntries);
+              
               const savedIndexStr = localStorage.getItem("active_session_history_index");
               const savedIndex = savedIndexStr && savedIndexStr !== "undefined" ? JSON.parse(savedIndexStr) : null;
-
+              
               if (savedIndex === null) {
                 setActiveHistoryIndex(null);
                 loadWord(getParamsFromMode(restoredMode, id));
@@ -806,7 +806,7 @@ export default function Index() {
   // Sync active session info and history to localStorage for recovery
   useEffect(() => {
     if (isRecovering) return;
-
+    
     // Always save UI state so it survives reloads even without an active session
     localStorage.setItem("active_session_recovery", JSON.stringify({
       userId: user?.id,
@@ -1331,7 +1331,7 @@ export default function Index() {
         };
         setActivePracticeSession(nextActive);
         activePracticeSessionRef.current = nextActive;
-
+        
         try {
           const attempts = await fetchSessionAttempts(active.id);
           if (attempts && attempts.length > 0) {
@@ -1479,35 +1479,35 @@ export default function Index() {
       let rejectAttemptSaved: ((reason?: unknown) => void) | null = null;
       const attemptSaved = active
         ? new Promise<void>((resolve, reject) => {
-          resolveAttemptSaved = resolve;
-          rejectAttemptSaved = reject;
-        })
+            resolveAttemptSaved = resolve;
+            rejectAttemptSaved = reject;
+          })
         : null;
       const completed = active
         ? await submitAndRecordSpellingAttempt(coachingRequest, {
-          sessionId: active.id,
-          targetWord: resolvedWordText,
-          childAttempt,
-          level: lvl,
-          mode: active.modeKey,
-          definitionViewed: supportSnapshot.definitionViewed,
-          exampleViewed: supportSnapshot.exampleViewed,
-          originViewed: supportSnapshot.originViewed,
-          partOfSpeechViewed: supportSnapshot.partOfSpeechViewed ?? false,
-          repeatWordCount: repeatCount,
-          usedVoiceInput,
-        }, streamHandlers, {
-          waitForPreviousPersistence: previousPersistence,
-          onAttemptSaved: () => {
-            attemptSavePendingRef.current = false;
-            if (completedCoaching && !localAttemptApplied) {
-              localAttemptApplied = true;
-              applySuccessfulAttempt(completedCoaching);
-              prefetchNextWord();
-            }
-            resolveAttemptSaved?.();
-          },
-        })
+            sessionId: active.id,
+            targetWord: resolvedWordText,
+            childAttempt,
+            level: lvl,
+            mode: active.modeKey,
+            definitionViewed: supportSnapshot.definitionViewed,
+            exampleViewed: supportSnapshot.exampleViewed,
+            originViewed: supportSnapshot.originViewed,
+            partOfSpeechViewed: supportSnapshot.partOfSpeechViewed ?? false,
+            repeatWordCount: repeatCount,
+            usedVoiceInput,
+          }, streamHandlers, {
+            waitForPreviousPersistence: previousPersistence,
+            onAttemptSaved: () => {
+              attemptSavePendingRef.current = false;
+              if (completedCoaching && !localAttemptApplied) {
+                localAttemptApplied = true;
+                applySuccessfulAttempt(completedCoaching);
+                prefetchNextWord();
+              }
+              resolveAttemptSaved?.();
+            },
+          })
         : null;
       const res = completed?.coaching ?? await submitSpellingAttempt(coachingRequest, streamHandlers);
       if (completed && attemptSaved) {
@@ -1528,29 +1528,7 @@ export default function Index() {
         else setAuthOpen(true);
       }
       if (isCurrentWord()) {
-        const localIsCorrect = childAttempt === resolvedWordText.toLowerCase();
-        const fallbackCoaching: CoachingResponse = {
-          correctness: { isCorrect: localIsCorrect, reinforceSuccess: localIsCorrect },
-          missAnalysis: {
-            summary: localIsCorrect ? "Correct." : "Incorrect.",
-            primaryErrorType: null,
-            secondaryErrorTypes: [],
-            errorTypeEvidence: {},
-            primaryErrorFocus: "",
-            likelyWrongWordInterpretation: false,
-            usedMeaningDisambiguationWell: false,
-          },
-          wordTeaching: {
-            formTeaching: { summary: "", patterns: [], chunks: [], sayAloudFocus: "" },
-            conceptTeaching: { summary: "", meaningFocus: "", originFocus: "", morphologyFocus: "", originLabels: [], morphologyLabels: [], morphemeGlosses: [] },
-          },
-          coachingText: {
-            shortFeedback: localIsCorrect ? "Correct!" : "Not quite!",
-            fullExplanation: "",
-            memoryTip: "",
-          },
-        };
-        setResult(completedCoaching || fallbackCoaching);
+        setResult(completedCoaching);
         setError(
           attemptPersistenceStartedRef.current
             ? "Coaching completed, but this attempt could not be saved."
@@ -1612,12 +1590,12 @@ export default function Index() {
         audioUrlRef.current = url;
         currentAudioChallengeIdRef.current = word.challengeId;
       }
-
+      
       if (audioInstanceRef.current) {
         audioInstanceRef.current.pause();
         audioInstanceRef.current.currentTime = 0;
       }
-
+      
       const audio = new Audio(url);
       audioInstanceRef.current = audio;
       await audio.play();
@@ -2075,7 +2053,7 @@ export default function Index() {
                         : "bg-primary text-primary-foreground hover:bg-primary/90 hover:shadow-md"
                     )}
                   >
-                    <ArrowRight className="h-4 w-4" />
+                    <ArrowRight className="h-4 w-4" /> 
                     {submitting ? "Analyzing..." : persistingAttempt ? "Saving..." : "Next Word"}
                   </button>
                 </motion.div>

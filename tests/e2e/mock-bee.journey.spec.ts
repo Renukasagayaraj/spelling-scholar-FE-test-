@@ -1,7 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-
-const E2E_EMAIL = process.env.E2E_USER_EMAIL || "renuka.sagayaraj@gbritsolutions.com";
-const E2E_PASSWORD = process.env.E2E_USER_PASSWORD || "renuka@1234";
+import { E2E_EMAIL, E2E_PASSWORD } from "./constants";
 
 async function prepareSubscription(page: Page) {
   await page.route("**/api/stripe/subscription-status", (route) =>
@@ -121,7 +119,7 @@ async function prepareSubscription(page: Page) {
   });
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /Master every word/ })).toBeVisible();
+  await expect(page.getByText(/Master every word/i)).toBeVisible();
 
   await page.addLocatorHandler(
     page.getByRole("alertdialog", { name: "Active Session In Progress" }),
@@ -137,7 +135,7 @@ async function prepareSubscription(page: Page) {
     await expect(page.getByRole("dialog")).toBeVisible();
     await page.locator('input[type="email"]').fill(E2E_EMAIL);
     await page.locator('input[type="password"]').fill(E2E_PASSWORD);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.locator('form').getByRole("button", { name: "Sign in", exact: true }).click();
   }
 
   await expect(page.getByRole("button", { name: "Premium" })).toBeVisible();
@@ -190,7 +188,7 @@ test.describe("Journey 5: Mock Bee Practice & AI Review Flow - 6 Full Combinatio
         await page.getByRole("button", { name: "Exit round" }).click();
         await expect(page.getByRole("button", { name: "Back to dashboard" })).toBeVisible();
         await page.getByRole("button", { name: "Back to dashboard" }).click();
-        await expect(page.getByRole("heading", { name: /Master every word/ })).toBeVisible();
+        await expect(page.getByText(/Master every word/i)).toBeVisible();
       });
     }
   }

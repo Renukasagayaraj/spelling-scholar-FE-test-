@@ -45,11 +45,6 @@ export function DebugPanel({
 
   return (
     <div className="mt-6">
-      {wordData?.word && (
-        <span data-testid="hidden-target-word" style={{ display: "none" }}>
-          {wordData.word}
-        </span>
-      )}
       <button
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"

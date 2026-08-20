@@ -142,7 +142,7 @@ export type CreateMockBeeRoundResult =
 
 export async function createMockBeeRound(req: CreateRoundRequest): Promise<CreateMockBeeRoundResult> {
   if (USE_MOCK_FALLBACK) {
-    const session = mockCreateRound(req) as Record<string, unknown>;
+    const session = mockCreateRound(req) as unknown as Record<string, unknown>;
     Object.defineProperty(session, "action", { value: "created", configurable: true });
     Object.defineProperty(session, "sessionId", { value: session["id"], configurable: true });
     Object.defineProperty(session, "session", { value: session, configurable: true });

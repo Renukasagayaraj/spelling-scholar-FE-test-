@@ -111,15 +111,14 @@ jobs:
 
       - name: Build Project Artifacts
         run: |
-          echo "VITE_API_BASE_URL=${{ secrets.PROD_VITE_API_BASE_URL || secrets.PROD_API_BASE_URL }}" > .env.production
-          echo "VITE_SENTRY_DSN=${{ secrets.PROD_VITE_SENTRY_DSN || secrets.PROD_SENTRY_DSN }}" >> .env.production
-          echo "VITE_SUPABASE_URL=${{ secrets.PROD_VITE_SUPABASE_URL || secrets.PROD_SUPABASE_URL }}" >> .env.production
-          echo "VITE_SUPABASE_PUBLISHABLE_KEY=${{ secrets.PROD_VITE_SUPABASE_PUBLISHABLE_KEY || secrets.PROD_SUPABASE_PUBLISHABLE_KEY }}" >> .env.production
-          echo "VITE_TIDIO_TRACK_ID=${{ secrets.PROD_VITE_TIDIO_TRACK_ID }}" >> .env.production
-          echo "VITE_GOOGLE_ANALYTICS_ID=${{ secrets.PROD_VITE_GOOGLE_ANALYTICS_ID }}" >> .env.production
-          echo "VITE_SUBSCRIPTION_PRICE=${{ secrets.PROD_VITE_SUBSCRIPTION_PRICE }}" >> .env.production
-          mkdir -p .vercel
-          cp .env.production .vercel/.env.production.local
+          echo "VITE_APP_ENV=production" >> .env
+          echo "VITE_API_BASE_URL=${{ secrets.PROD_VITE_API_BASE_URL || secrets.PROD_API_BASE_URL }}" >> .env
+          echo "VITE_SENTRY_DSN=${{ secrets.PROD_VITE_SENTRY_DSN || secrets.PROD_SENTRY_DSN }}" >> .env
+          echo "VITE_SUPABASE_URL=${{ secrets.PROD_VITE_SUPABASE_URL || secrets.PROD_SUPABASE_URL }}" >> .env
+          echo "VITE_SUPABASE_PUBLISHABLE_KEY=${{ secrets.PROD_VITE_SUPABASE_PUBLISHABLE_KEY || secrets.PROD_SUPABASE_PUBLISHABLE_KEY }}" >> .env
+          echo "VITE_TIDIO_TRACK_ID=${{ secrets.PROD_VITE_TIDIO_TRACK_ID }}" >> .env
+          echo "VITE_GOOGLE_ANALYTICS_ID=${{ secrets.PROD_VITE_GOOGLE_ANALYTICS_ID }}" >> .env
+          echo "VITE_SUBSCRIPTION_PRICE=${{ secrets.PROD_VITE_SUBSCRIPTION_PRICE }}" >> .env
           vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}

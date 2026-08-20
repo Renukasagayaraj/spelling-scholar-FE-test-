@@ -1,11 +1,20 @@
 import { test, expect, Page } from "@playwright/test";
 
+import { getWordByDefinition } from "./dictionary";
+
 async function getTargetWord(page: Page): Promise<string> {
-  const hiddenWord = page.getByTestId("hidden-target-word");
-  await expect(hiddenWord).toBeAttached();
-  const word = await hiddenWord.textContent();
-  if (!word) throw new Error("Hidden target word not found");
-  return word.trim();
+  await page.getByRole("button", { name: /Show Debug/ }).click();
+  const preText = await page.locator("pre").first().innerText();
+  const wordData = JSON.parse(preText);
+  await page.getByRole("button", { name: /Hide Debug/ }).click();
+  
+  if (wordData.word) return wordData.word;
+  
+  const def = wordData.definition || "";
+  const word = getWordByDefinition(def);
+  if (word) return word;
+  
+  throw new Error("Target word not found in network, and definition unmatched: " + def);
 }
 
 test.describe("Journey 2: Standard Practice & V2 Progressive Streaming", () => {
@@ -18,7 +27,7 @@ test.describe("Journey 2: Standard Practice & V2 Progressive Streaming", () => {
   for (const band of gradeBands) {
     test(`standard practice flow for ${band.label} (${band.levelName})`, async ({ page }) => {
       await page.goto("/");
-      await expect(page.getByRole("heading", { name: /Master every word/ })).toBeVisible();
+      await expect(page.getByText(/Master every word/i)).toBeVisible();
 
       await page.addLocatorHandler(
         page.getByRole("alertdialog", { name: "Active Session In Progress" }),
@@ -58,9 +67,11 @@ test.describe("Journey 2: Standard Practice & V2 Progressive Streaming", () => {
       await expect(page.getByText("Not quite!")).toBeVisible();
 
       // Verify AI streaming sections
-      if (band.label !== "Grades 1–3") {
-        await expect(page.getByRole("heading", { name: "Explanation" })).toBeVisible();
-        await expect(page.getByRole("heading", { name: "Memory Tip" })).toBeVisible();
+      if (band.levelName !== "Beginner") {
+        await expect(page.getByText("Explanation")).toBeVisible();
+        await expect(page.getByText("Memory Tip")).toBeVisible();
+      } else {
+        await expect(page.getByText("Say It Aloud")).toBeVisible();
       }
       await expect(page.getByRole("button", { name: "Next Word" })).toBeEnabled();
 
@@ -68,10 +79,10 @@ test.describe("Journey 2: Standard Practice & V2 Progressive Streaming", () => {
       await page.locator("aside").getByText(firstWord, { exact: true }).click();
       await expect(page.getByText("Correct!")).toBeVisible();
 
-      // 5. Clean Session Completion / Return to Home (click twice due to hierarchical nav)
+      // 5. Clean Session Completion / Return to Home
       await page.getByRole("button", { name: "Go Back", exact: true }).click();
       await page.getByRole("button", { name: "Go Back", exact: true }).click();
-      await expect(page.getByRole("heading", { name: /Master every word/ })).toBeVisible();
+      await expect(page.getByText(/Master every word/i)).toBeVisible();
     });
   }
 });

@@ -9,7 +9,7 @@ const IS_CI = [process.env.CI, process.env.GITHUB_ACTIONS, process.env.TF_BUILD]
   .some(enabledEnvironmentFlag);
 
 // Set SLOW_MO_MS to a delay in milliseconds (e.g. 500 or 1000) to slow down test actions for visual debugging
-const SLOW_MO_MS = Number(process.env.SLOW_MO ?? (IS_CI ? 0 : 500));
+const SLOW_MO_MS = Number(process.env.SLOW_MO ?? 0);
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -23,9 +23,6 @@ export default defineConfig({
   use: {
     baseURL: FRONTEND_URL,
     screenshot: "on",
-    extraHTTPHeaders: {
-      "x-test-automation": "true"
-    },
     launchOptions: {
       slowMo: SLOW_MO_MS,
     },
@@ -82,7 +79,7 @@ export default defineConfig({
       },
       url: "http://127.0.0.1:3003/api/health",
       reuseExistingServer: !IS_CI,
-      stderr: "pipe",
+      stderr: "ignore",
       timeout: 120_000,
     },
     {

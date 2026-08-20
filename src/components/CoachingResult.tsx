@@ -35,21 +35,21 @@ function Section({ icon: Icon, title, children, className }: { icon: React.Eleme
   );
 }
 
-function RuntimeText({ state, text, italic = false }: { state?: SpellingCoachRuntimeSectionState; text: string; italic?: boolean }) {
+function RuntimeText({ state, text, italic = false, centerLoader = false }: { state?: SpellingCoachRuntimeSectionState; text: string; italic?: boolean; centerLoader?: boolean }) {
   if (state?.status === "error" && !text) {
     return (
-      <div className="flex items-center gap-2 text-muted-foreground">
+      <div className={cn("flex items-center gap-2 text-muted-foreground", centerLoader && "justify-center")}>
         <AlertCircle className="h-3.5 w-3.5 text-warning" />
         <span>This section could not be loaded.</span>
       </div>
     );
   }
 
-  if (!text && (state?.status === "idle" || state?.status === "streaming")) {
+  if (!text.trim() && (!state || state?.status === "idle" || state?.status === "streaming")) {
     return (
-      <div className="flex items-center gap-2 text-muted-foreground">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        <span>Loading…</span>
+      <div className={cn("flex items-center gap-2 text-muted-foreground", centerLoader ? "justify-center" : "")}>
+        <Loader2 className="h-4 w-4 animate-spin" />
+        <span>Loading...</span>
       </div>
     );
   }
@@ -87,13 +87,10 @@ export function CoachingResult({ result, level, targetWord }: CoachingResultProp
           {isCorrect ? <CheckCircle2 className="h-6 w-6 text-success" /> : <XCircle className="h-6 w-6 text-secondary" />}
           <span className="font-display text-lg">{isCorrect ? "Correct!" : "Not quite!"}</span>
         </div>
-        {!isCorrect && (
-          <div className="text-sm text-muted-foreground mt-1">
-            <RuntimeText state={shortFeedbackState} text={coachingText.shortFeedback?.trim() ?? ""} />
+        {(!shortFeedbackState || shortFeedbackState.status !== "complete" || coachingText.shortFeedback?.trim()) && (
+          <div className="text-sm text-muted-foreground mt-2">
+            <RuntimeText state={shortFeedbackState} text={coachingText.shortFeedback?.trim() ?? ""} centerLoader />
           </div>
-        )}
-        {isCorrect && coachingText.shortFeedback?.trim() && (
-          <p className="text-sm text-muted-foreground">{coachingText.shortFeedback.trim()}</p>
         )}
       </motion.div>
 
@@ -214,7 +211,7 @@ export function CoachingResult({ result, level, targetWord }: CoachingResultProp
         </Section>
       )}
 
-      {!isLevel1 && (coachingText.memoryTip || (memoryTipState && memoryTipState.status !== "complete")) && (
+      {!isLevel1 && (!memoryTipState || memoryTipState.status !== "complete" || coachingText.memoryTip?.trim()) && (
         <Section icon={Lightbulb} title="Memory Tip">
           <RuntimeText state={memoryTipState} text={coachingText.memoryTip} italic />
         </Section>

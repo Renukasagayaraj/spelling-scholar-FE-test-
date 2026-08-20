@@ -340,18 +340,16 @@ const streamingRequest: CoachingRequest = {
 
 describe("spelling coach streaming API", () => {
   beforeEach(() => {
-    localStorage.setItem("spelling_coach_guest_token", "test-guest-token");
     vi.stubGlobal("fetch", vi.fn());
   });
 
   afterEach(() => {
-    localStorage.removeItem("spelling_coach_guest_token");
     vi.unstubAllGlobals();
   });
 
   it("uses the streaming endpoint and publishes each SSE stage immediately", async () => {
     const rawEvents = [
-      `event: meta\r\ndata: ${JSON.stringify({ requestId: "req-1", isCorrect: false, timingMs: 2, targetWordMasked: true, missAnalysis: { summary: "", errorTypes: ["letter substitution"], primaryErrorFocus: "Substitution: e for a", likelyWrongWordInterpretation: false, usedMeaningDisambiguationWell: false } })}\r\n\r\n`,
+      `event: meta\r\ndata: ${JSON.stringify({ requestId: "req-1", isCorrect: false, timingMs: 2, targetWordMasked: true, missAnalysis: { summary: "", primaryErrorType: "letter substitution", secondaryErrorTypes: [], errorTypeEvidence: {}, primaryErrorFocus: "Substitution: e for a", likelyWrongWordInterpretation: false, usedMeaningDisambiguationWell: false } })}\r\n\r\n`,
       `event: precomputed\ndata: ${JSON.stringify({ payload: { wordTeaching: { conceptTeaching: { summary: "Word teaching", meaningFocus: "", originFocus: "", morphologyFocus: "", originLabels: [], morphologyLabels: [], relatedForms: [] } }, wordBreakdown: { displayChunks: ["abun", "dance"], chunkReason: "chunks", matchedPatterns: [] }, conceptLabels: { originLabels: [], patternLabels: [], morphologyLabels: [] } }, timingMs: 3 })}\n\n`,
       `event: section-start\ndata: ${JSON.stringify({ section: "miss_analysis", timingMs: 4 })}\n\n`,
       `event: section-chunk\ndata: ${JSON.stringify({ section: "miss_analysis", text: "Vowel ", timingMs: 5 })}\n\n`,
@@ -376,7 +374,7 @@ describe("spelling coach streaming API", () => {
         stages.push("meta");
         expect(partial.correctness.isCorrect).toBe(false);
         expect(partial.wordBreakdown.displayChunks).toEqual([]);
-        expect(partial.missAnalysis.errorTypes).toEqual(["letter substitution"]);
+        expect(partial.missAnalysis.primaryErrorType).toEqual("letter substitution");
       },
       onPrecomputed: (partial) => {
         stages.push("precomputed");
@@ -420,7 +418,7 @@ describe("spelling coach streaming API", () => {
       "done",
     ]);
     expect(result.missAnalysis.summary).toBe("Vowel substitution");
-    expect(result.missAnalysis.errorTypes).toEqual(["letter substitution"]);
+    expect(result.missAnalysis.primaryErrorType).toEqual("letter substitution");
     expect(result.coachingText.fullExplanation).toBe("Use an a.");
     expect(result.coachingText.memoryTip).toBe("Remember dance.");
     expect(result.streamSections?.memory_tip.text).toBe("Remember dance.");
@@ -559,12 +557,10 @@ describe("spelling coach streaming API", () => {
 
 describe("streaming practice session lifecycle", () => {
   beforeEach(() => {
-    localStorage.setItem("spelling_coach_guest_token", "test-guest-token");
     vi.stubGlobal("fetch", vi.fn());
   });
 
   afterEach(() => {
-    localStorage.removeItem("spelling_coach_guest_token");
     vi.unstubAllGlobals();
   });
 
@@ -612,7 +608,7 @@ describe("streaming practice session lifecycle", () => {
         return { ok: true, status: 200, json: async () => ({ attemptId: "attempt-1" }) };
       })
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ session }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true, result: "completed" }) });
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true }) });
     vi.stubGlobal("fetch", fetchMock);
 
     const started = await startPracticeSession({ mode: "standard", level: 2 });

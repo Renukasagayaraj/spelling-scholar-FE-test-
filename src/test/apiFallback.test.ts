@@ -20,7 +20,7 @@ describe("API local-preview fallbacks", () => {
   it("returns mock words and pronunciation after network failures", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("offline")));
     await expect(api.fetchNextWord({ level: 1, foreignOrigin: "Japanese" })).resolves.toMatchObject({ origin: "Japanese origin (mock)." });
-    await expect(api.fetchPronunciationAudio("friend")).resolves.toBe("blob:fallback");
+    await expect(api.fetchPronunciationAudio({ challengeId: "c1", sessionId: "s1" })).resolves.toBe("blob:fallback");
   });
 
   it("implements subscription, checkout, and portal previews entirely locally", async () => {

@@ -25,6 +25,7 @@ import { fetchCustomLists, type CustomListSummary } from "@/lib/api";
 import {
   createMockBeeRound,
   endMockBeeSession,
+  getMockBeeSession,
   fetchMockBeeCurrentWordAudio,
   fetchMockBeeReview,
   submitMockBeeAttempt,
@@ -194,7 +195,7 @@ export default function MockBee() {
         return false;
       }
 
-      setSession((result as Record<string, unknown>)["session"] as MockBeeSession || result as unknown as MockBeeSession);
+      setSession((result as unknown as Record<string, unknown>)["session"] as MockBeeSession || result as unknown as MockBeeSession);
       setStage("round");
       resetTurnState();
       return true;
@@ -338,8 +339,8 @@ export default function MockBee() {
       }
       const session = await getMockBeeSession(pendingConflict.activeSessionId);
       setSession(session as MockBeeSession);
-      if ((session as Record<string, unknown>)["status"] === "completed") {
-        void goToReview((session as Record<string, unknown>)["id"] as string);
+      if ((session as unknown as Record<string, unknown>)["status"] === "completed") {
+        void goToReview((session as unknown as Record<string, unknown>)["id"] as string);
       } else {
         setStage("round");
         resetTurnState();

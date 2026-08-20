@@ -1,7 +1,23 @@
 import { test, expect, Page } from "@playwright/test";
+import { E2E_EMAIL, E2E_PASSWORD } from "./constants";
 
-const E2E_EMAIL = process.env.E2E_USER_EMAIL || "renuka.sagayaraj@gbritsolutions.com";
-const E2E_PASSWORD = process.env.E2E_USER_PASSWORD || "renuka@1234";
+import { getWordByDefinition } from "./dictionary";
+
+async function getTargetWord(page: Page): Promise<string> {
+  await page.getByRole("button", { name: /Show Debug/ }).click();
+  const preText = await page.locator("pre").first().innerText();
+  const wordData = JSON.parse(preText);
+  await page.getByRole("button", { name: /Hide Debug/ }).click();
+  
+  if (wordData.word) return wordData.word;
+  
+  const def = wordData.definition || "";
+  const word = getWordByDefinition(def);
+  if (word) return word;
+  
+  throw new Error("Target word not found in network, and definition unmatched: " + def);
+}
+
 
 async function prepareSubscription(page: Page) {
   await page.route("**/api/stripe/subscription-status", (route) =>
@@ -12,7 +28,7 @@ async function prepareSubscription(page: Page) {
     })
   );
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /Master every word/ })).toBeVisible();
+  await expect(page.getByText(/Master every word/i)).toBeVisible();
 
   await page.addLocatorHandler(
     page.getByRole("alertdialog", { name: "Active Session In Progress" }),
@@ -28,18 +44,10 @@ async function prepareSubscription(page: Page) {
     await expect(page.getByRole("dialog")).toBeVisible();
     await page.locator('input[type="email"]').fill(E2E_EMAIL);
     await page.locator('input[type="password"]').fill(E2E_PASSWORD);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.locator('form').getByRole("button", { name: "Sign in", exact: true }).click();
   }
 
   await expect(page.getByRole("button", { name: "Premium" })).toBeVisible();
-}
-
-async function getTargetWord(page: Page): Promise<string> {
-  const hiddenWord = page.getByTestId("hidden-target-word");
-  await expect(hiddenWord).toBeAttached();
-  const word = await hiddenWord.textContent();
-  if (!word) throw new Error("Hidden target word not found");
-  return word.trim();
 }
 
 test.describe("Journey 6: System Resilience & Degradation", () => {
@@ -72,10 +80,10 @@ test.describe("Journey 6: System Resilience & Degradation", () => {
 
     await expect(page.getByText("Correct!")).toBeVisible();
 
-    // Verify returning to dashboard (click twice due to hierarchical nav)
+    // Verify returning to dashboard
     await page.getByRole("button", { name: "Go Back", exact: true }).click();
     await page.getByRole("button", { name: "Go Back", exact: true }).click();
-    await expect(page.getByRole("heading", { name: /Master every word/ })).toBeVisible();
+    await expect(page.getByText(/Master every word/i)).toBeVisible();
   });
 
   test("graceful handling when AI stream times out (port 4174)", async ({ page }) => {
@@ -87,7 +95,7 @@ test.describe("Journey 6: System Resilience & Degradation", () => {
     await expect(page.getByRole("button", { name: "Hear the Word" })).toBeVisible();
 
     // Intercept SSE streaming request to mock AI timeout / fallback response
-    await page.route("**/api/spelling-coach/stream", (route) =>
+    await page.route("**/api/coach/spelling", (route) =>
       route.fulfill({
         status: 504,
         contentType: "application/json",
@@ -99,7 +107,7 @@ test.describe("Journey 6: System Resilience & Degradation", () => {
     await page.getByPlaceholder("Type your spelling…").fill(targetWord);
     await page.getByRole("button", { name: "Submit" }).click();
 
-    await expect(page.locator("span").filter({ hasText: "Correct!" }).first()).toBeVisible();
+    await expect(page.getByText("Correct!")).toBeVisible();
   });
 
   test("graceful handling when OpenAI returns API error (port 4175)", async ({ page }) => {
@@ -110,7 +118,7 @@ test.describe("Journey 6: System Resilience & Degradation", () => {
     await page.getByRole("button", { name: "Start Session" }).click();
     await expect(page.getByRole("button", { name: "Hear the Word" })).toBeVisible();
 
-    await page.route("**/api/spelling-coach/stream", (route) =>
+    await page.route("**/api/coach/spelling", (route) =>
       route.fulfill({
         status: 502,
         contentType: "application/json",
@@ -122,7 +130,7 @@ test.describe("Journey 6: System Resilience & Degradation", () => {
     await page.getByPlaceholder("Type your spelling…").fill(targetWord);
     await page.getByRole("button", { name: "Submit" }).click();
 
-    await expect(page.locator("span").filter({ hasText: "Correct!" }).first()).toBeVisible();
+    await expect(page.getByText("Correct!")).toBeVisible();
   });
 
   test("graceful handling when backend endpoint is down (port 4176)", async ({ page }) => {
@@ -133,7 +141,7 @@ test.describe("Journey 6: System Resilience & Degradation", () => {
     await page.getByRole("button", { name: "Start Session" }).click();
     await expect(page.getByRole("button", { name: "Hear the Word" })).toBeVisible();
 
-    await page.route("**/api/spelling-coach/stream", (route) =>
+    await page.route("**/api/coach/spelling", (route) =>
       route.fulfill({
         status: 500,
         contentType: "application/json",
@@ -145,6 +153,6 @@ test.describe("Journey 6: System Resilience & Degradation", () => {
     await page.getByPlaceholder("Type your spelling…").fill(targetWord);
     await page.getByRole("button", { name: "Submit" }).click();
 
-    await expect(page.locator("span").filter({ hasText: "Correct!" }).first()).toBeVisible();
+    await expect(page.getByText("Correct!")).toBeVisible();
   });
 });

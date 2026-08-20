@@ -1,8 +1,7 @@
 import { test as setup, expect } from '@playwright/test';
+import { E2E_EMAIL, E2E_PASSWORD } from "./constants";
 
 const authFile = './tests/e2e/.auth/user.json';
-const E2E_EMAIL = process.env.E2E_USER_EMAIL || "renuka.sagayaraj@gbritsolutions.com";
-const E2E_PASSWORD = process.env.E2E_USER_PASSWORD || "renuka@1234";
 
 setup('authenticate', async ({ page }) => {
   await page.goto('/');
@@ -21,10 +20,10 @@ setup('authenticate', async ({ page }) => {
 
   await page.locator('input[type="email"]').fill(E2E_EMAIL);
   await page.locator('input[type="password"]').fill(E2E_PASSWORD);
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.locator('form').getByRole("button", { name: "Sign in", exact: true }).click();
 
-  // Verify successful login
-  await expect(page.getByTitle("View Account Profile")).toBeVisible();
+  // Verify successful login by checking for the Sign out button
+  await expect(page.getByTitle("Sign out")).toBeVisible();
 
   // Save storage state to be used by all other tests
   await page.context().storageState({ path: authFile });
