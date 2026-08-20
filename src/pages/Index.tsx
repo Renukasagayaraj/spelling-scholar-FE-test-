@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Loader2, Send, ArrowRight, Volume2, Volume1, VolumeX, Sparkles, Play, StopCircle } from "lucide-react";
+import { Loader2, Send, ArrowRight, Volume2, Sparkles, Play, StopCircle } from "lucide-react";
 import { downloadSessionReport } from "@/lib/sessionReport";
 import confetti from "canvas-confetti";
 import { useCheer } from "@/hooks/use-cheer";
@@ -23,15 +23,19 @@ import { ArrowLeft, GraduationCap, List as ListIcon, Globe } from "lucide-react"
 import {
   fetchNextWord,
   submitSpellingAttempt,
+  submitAndRecordSpellingAttempt,
   fetchPronunciationAudio,
   startPracticeSession,
-  recordWordAttempt,
   endPracticeSession,
   fetchUserStatistics,
+  fetchGuestUsage,
+  claimGuestPractice,
   fetchSessionAttempts,
   fetchPracticeSession,
   fetchCustomLists,
   fetchForeignOriginDetails,
+  FreeAttemptLimitError,
+  InactivePracticeSessionError,
 } from "@/lib/api";
 import { endMockBeeSession } from "@/lib/mockBeeApi";
 import { VoiceMic } from "@/components/VoiceMic";
@@ -45,116 +49,105 @@ import type {
   ForeignOriginSummary,
   ForeignOriginDetail,
   NextWordParams,
+  CoachingRequest,
   DbWordAttempt,
   PracticeSessionRecord,
+  SpellingCoachStreamHandlers,
+  StartPracticeSessionRequest,
+  PersistedAttemptResult,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { AuthMenu } from "@/components/AuthMenu";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { type HistoryEntry } from "@/components/SessionHistoryPanel";
 import { SessionHistorySidebar } from "@/components/SessionHistorySidebar";
-import beePng from "@/assets/bee.png";
 import { Header } from "@/components/Header";
 import { useAuth } from "@/hooks/use-auth";
 import { PaymentDialog } from "@/components/PaymentDialog";
 import { AuthDialog } from "@/components/AuthDialog";
 import { ActiveSessionConflictDialog } from "@/components/ActiveSessionConflictDialog";
 import { queueMockBeeResume, takePracticeResumeMode } from "@/lib/sessionResume";
+import { parseStoredCoaching } from "@/lib/sessionRecovery";
 
-const STANDARD_FREE_WORD_LIMIT = 30;
+const STANDARD_FREE_WORD_LIMIT = Number(import.meta.env.VITE_STANDARD_FREE_WORD_LIMIT) || 30;
 
-const DEFAULT_PROFILE = {
-  childId: "c1",
-  age: 10,
-  grade: "5",
-  spellingLevel: "competition",
-};
+interface ActivePracticeSession {
+  id: string;
+  modeKey: string;
+  startedAt: number;
+  totalAttempts: number;
+  totalCorrect: number;
+}
 
-const getParamsFromMode = (mode: string): NextWordParams => {
+function historyEntryFromAttempt(attempt: DbWordAttempt): HistoryEntry | null {
+  const result = parseStoredCoaching(attempt);
+  const catalog = attempt.word_catalog_entry;
+  return {
+    word: {
+      word: attempt.target_word,
+      level: catalog?.level ?? String(attempt.level ?? 1),
+      gradeBand: catalog?.gradeBand ?? "",
+      difficulty: catalog?.difficulty ?? "medium",
+      origin: catalog?.origin ?? "",
+      definition: catalog?.definition ?? "",
+      exampleSentence: catalog?.exampleSentence ?? "",
+      partOfSpeech: catalog?.partOfSpeech ?? "",
+      pronunciation: catalog?.pronunciation ?? "",
+      patterns: catalog?.patterns ?? [],
+    },
+    attempt: attempt.child_attempt,
+    result,
+  };
+}
+
+function sessionRequestForMode(
+  modeKey: string,
+  customListName?: string,
+): StartPracticeSessionRequest {
+  if (modeKey.startsWith("standard_level_")) {
+    return {
+      mode: "standard",
+      level: Number(modeKey.replace("standard_level_", "")),
+    };
+  }
+  if (modeKey.startsWith("custom_list_")) {
+    return {
+      mode: "custom",
+      customListId: modeKey.replace("custom_list_", ""),
+      customListName,
+    };
+  }
+  if (modeKey.startsWith("foreign_origin_")) {
+    return {
+      mode: "foreign_origin",
+      originLanguage: modeKey.replace("foreign_origin_", ""),
+    };
+  }
+  return { mode: modeKey };
+}
+
+function nextWordRequestKey(params: NextWordParams): string {
+  return JSON.stringify({
+    level: params.level,
+    customListId: params.customListId,
+    foreignOrigin: params.foreignOrigin,
+  });
+}
+
+const getParamsFromMode = (mode: string, sessionId?: string | null): NextWordParams => {
+  const sid = sessionId || undefined;
   if (mode.startsWith("standard_level_")) {
     const lvl = parseInt(mode.replace("standard_level_", ""), 10);
-    return { level: lvl };
+    return { level: lvl, sessionId: sid };
   }
   if (mode.startsWith("custom_list_")) {
     const listId = mode.replace("custom_list_", "");
-    return { customListId: listId };
+    return { customListId: listId, sessionId: sid };
   }
   if (mode.startsWith("foreign_origin_")) {
     const origin = mode.replace("foreign_origin_", "");
-    return { foreignOrigin: origin };
+    return { foreignOrigin: origin, sessionId: sid };
   }
-  return {};
-};
-
-const historyEntryFromAttempt = (att: DbWordAttempt): HistoryEntry => {
-  const isCorrect = att.is_correct;
-  const cat = att.word_catalog_entry;
-
-  return {
-    word: {
-      word: att.target_word,
-      level: cat?.level ?? String(att.level ?? 1),
-      gradeBand: cat?.gradeBand ?? "1-3",
-      difficulty: cat?.difficulty ?? "medium",
-      origin: cat?.origin ?? "",
-      definition: cat?.definition ?? "",
-      exampleSentence: cat?.exampleSentence ?? "",
-      partOfSpeech: cat?.partOfSpeech ?? "",
-      pronunciation: cat?.pronunciation ?? "",
-      patterns: cat?.patterns ?? [],
-    },
-    attempt: att.child_attempt,
-    result: {
-      correctness: { isCorrect, reinforceSuccess: true },
-      missAnalysis: {
-        summary: "",
-        errorTypes: [],
-        primaryErrorFocus: "",
-        likelyWrongWordInterpretation: false,
-        usedMeaningDisambiguationWell: false,
-      },
-      wordTeaching: {
-        formTeaching: {
-          summary: "",
-          patterns: [],
-          chunks: [],
-          chunkReason: "",
-          sayAloudFocus: "",
-        },
-        conceptTeaching: {
-          summary: "",
-          meaningFocus: "",
-          originFocus: "",
-          morphologyFocus: "",
-          originLabels: [],
-          morphologyLabels: [],
-        },
-      },
-      errorRelevance: { mostRelevantToError: "", confidence: 0, reason: "" },
-      teachingDecision: {
-        strategy: "",
-        primaryFocus: "",
-        secondaryFocuses: [],
-        confidence: 0,
-        rationale: "",
-      },
-      coachingText: {
-        shortFeedback: isCorrect ? "Correct!" : `Spelled as: ${att.child_attempt}`,
-        fullExplanation: isCorrect
-          ? "You spelled this word correctly."
-          : `The correct spelling is "${att.target_word}".`,
-        memoryTip: "",
-        sayAloudTip: "",
-      },
-      wordBreakdown: { displayChunks: [], chunkReason: "", matchedPatterns: [] },
-      conceptLabels: { patternLabels: [], originLabels: [], morphologyLabels: [] },
-      nextStep: {
-        practiceFocus: "",
-        shouldReviewSoon: !isCorrect,
-        suggestedSimilarWordTypes: [],
-      },
-    },
-  };
+  return sid ? { sessionId: sid } : {};
 };
 
 export default function Index() {
@@ -173,11 +166,25 @@ export default function Index() {
   const [attempt, setAttempt] = useState("");
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [persistingAttempt, setPersistingAttempt] = useState(false);
+  const [persistenceFailed, setPersistenceFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   const [result, setResult] = useState<CoachingResponse | null>(null);
+  const [streamErrors, setStreamErrors] = useState<string[]>([]);
   const [audioLoading, setAudioLoading] = useState(false);
   const [audioError, setAudioError] = useState<string | null>(null);
   const audioUrlRef = useRef<string | null>(null);
+  const audioInstanceRef = useRef<HTMLAudioElement | null>(null);
+  const currentAudioChallengeIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+      }
+    };
+  }, []);
 
   const [defOpen, setDefOpen] = useState(false);
   const [exOpen, setExOpen] = useState(false);
@@ -191,13 +198,28 @@ export default function Index() {
     partOfSpeechViewed: false,
   });
   const repeatWordCount = useRef(0);
-  const usedVoiceInput = useRef(false);
+  const usedVoiceInputRef = useRef(false);
+  const usedVoiceInput = usedVoiceInputRef;
+  const submitAbortRef = useRef<AbortController | null>(null);
+  const submitInFlightRef = useRef(false);
+  const submitTaskRef = useRef<Promise<void> | null>(null);
+  const persistenceQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const persistenceFailureRef = useRef<Error | null>(null);
+  const attemptPersistenceStartedRef = useRef(false);
+  const attemptSavePendingRef = useRef(false);
+  const sessionStartInFlightRef = useRef(false);
+  const endingSessionRef = useRef<Promise<void> | null>(null);
+  const pageExitEndStartedRef = useRef(false);
+  const wordStateVersionRef = useRef(0);
+  const prefetchedWordRef = useRef<{
+    key: string;
+    promise: Promise<WordData>;
+  } | null>(null);
 
   const [session, setSession] = useState<SessionContext>({
     mode: "practice",
     previousAttemptsOnThisWord: 0,
     previousMissPatterns: [],
-    recentlyPracticedWords: [],
   });
 
   // Channel / mode state. activeChannel = null means show the dashboard.
@@ -217,6 +239,9 @@ export default function Index() {
   // Session word history (per practice session)
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [activeHistoryIndex, setActiveHistoryIndex] = useState<number | null>(null);
+  const [activePracticeSession, setActivePracticeSession] =
+    useState<ActivePracticeSession | null>(null);
+  const activePracticeSessionRef = useRef<ActivePracticeSession | null>(null);
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeSessionMode, setActiveSessionMode] = useState<string | null>(null);
@@ -229,11 +254,11 @@ export default function Index() {
     activeSessionId: string;
     requestedMode: string;
   } | null>(null);
-  const [conflictLoading, setConflictLoading] = useState(false);
+  const [conflictLoading, setConflictLoading] = useState<"resume" | "startNew" | null>(null);
   const [conflictError, setConflictError] = useState<string | null>(null);
 
-  const endSession = async () => {
-    if (!activeSessionId || !sessionStartTime) return;
+  const endSession = useCallback(async (): Promise<boolean> => {
+    if (!activeSessionId || !sessionStartTime) return true;
     const savedMap = localStorage.getItem("active_sessions_map");
     const map = savedMap ? JSON.parse(savedMap) : {};
     const prevAcc = (activeSessionMode && map[activeSessionMode]?.accumulatedDuration) || 0;
@@ -241,15 +266,16 @@ export default function Index() {
     const totalDuration = prevAcc + currentDuration;
 
     try {
-      await endPracticeSession({
+      const endResult = await endPracticeSession({
         sessionId: activeSessionId,
-        totalWordsAttempted: sessionWordCount,
-        totalCorrect: sessionCorrectCount,
+        totalWordsAttempted: Math.max(sessionWordCount, history.length),
+        totalCorrect: Math.max(sessionCorrectCount, history.filter((h) => h.result?.correctness?.isCorrect).length),
         durationSeconds: totalDuration,
       });
-    } catch (err) {
-      console.error("Failed to end practice session:", err);
-    } finally {
+      if (endResult === "already_abandoned") {
+        setSessionNotice("This session had already ended due to inactivity. You can start a new session.");
+      }
+
       if (activeSessionMode) {
         const savedMap = localStorage.getItem("active_sessions_map");
         const map = savedMap ? JSON.parse(savedMap) : {};
@@ -259,40 +285,55 @@ export default function Index() {
       setActiveSessionId(null);
       setSessionStartTime(null);
       setActiveSessionMode(null);
+      return true;
+    } catch (err) {
+      console.error("Failed to end practice session:", err);
+      setError("Could not end the session. Please check your connection and try again.");
+      return false;
     }
-  };
+  }, [
+    activeSessionId,
+    activeSessionMode,
+    history,
+    sessionCorrectCount,
+    sessionStartTime,
+    sessionWordCount,
+  ]);
 
-  const clearRecoveredSessionState = useCallback((message?: string) => {
-    localStorage.removeItem("active_sessions_map");
-    localStorage.removeItem("active_session_recovery");
-    localStorage.removeItem("active_session_history");
-    localStorage.removeItem("active_session_history_index");
+  const clearRecoveredSessionState = useCallback(
+    (message?: string, options: { preserveHistory?: boolean } = {}) => {
+      localStorage.removeItem("active_sessions_map");
+      localStorage.removeItem("active_session_recovery");
+      if (!options.preserveHistory) {
+        localStorage.removeItem("active_session_history");
+        localStorage.removeItem("active_session_history_index");
+      }
 
-    setActiveSessionId(null);
-    setActiveSessionMode(null);
-    setSessionStartTime(null);
-    setSessionWordCount(0);
-    setSessionCorrectCount(0);
-    setActiveChannel(null);
-    setLevel(0);
-    setWord(null);
-    setResult(null);
-    setHistory([]);
-    setActiveHistoryIndex(null);
-    setCustomPracticeActive(false);
-    setSelectedCustomList(null);
-    setForeignPracticeActive(false);
-    setSelectedForeignOrigin(null);
-    setSelectedForeignOriginDetails(null);
-    setAttempt("");
-    setDefOpen(false);
-    setExOpen(false);
-    setOrigOpen(false);
-    setPosOpen(false);
-    if (message) {
-      setError(message);
-    }
-  }, []);
+      setActiveSessionId(null);
+      setActiveSessionMode(null);
+      setSessionStartTime(null);
+      setSessionWordCount(0);
+      setSessionCorrectCount(0);
+      setWord(null);
+      setResult(null);
+      if (!options.preserveHistory) {
+        setHistory([]);
+        setActiveHistoryIndex(null);
+      }
+      setCustomPracticeActive(false);
+      setForeignPracticeActive(false);
+      setStandardSessionActive(false);
+      setAttempt("");
+      setDefOpen(false);
+      setExOpen(false);
+      setOrigOpen(false);
+      setPosOpen(false);
+      if (message) {
+        setSessionNotice(message);
+      }
+    },
+    [],
+  );
 
   const getRecoveredModeFromSession = useCallback(
     (session: PracticeSessionRecord, fallbackMode?: string | null) => {
@@ -317,15 +358,40 @@ export default function Index() {
       if (session?.status === "active") {
         return true;
       }
+
+      clearRecoveredSessionState(
+        session?.status === "abandoned"
+          ? "This session ended after 30 minutes without a word submission. Start a new session to continue."
+          : "This session is no longer active. Start a new session to continue.",
+        { preserveHistory: true },
+      );
+      return false;
     } catch (err) {
       console.error("Failed to verify session status:", err);
       setError("Could not verify the current session. Please refresh and try again.");
       return false;
     }
-
-    clearRecoveredSessionState("This session was closed in another tab.");
-    return false;
   }, [activeSessionId, clearRecoveredSessionState]);
+
+  // Re-check the session when the user returns to this browser tab.
+  useEffect(() => {
+    if (!activeSessionId) return;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void ensureSessionIsStillActive();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener(
+        "visibilitychange",
+        handleVisibilityChange,
+      );
+    };
+  }, [activeSessionId, ensureSessionIsStillActive]);
 
   const isStartingSession = useRef(false);
 
@@ -343,6 +409,7 @@ export default function Index() {
       return {
         mode: "custom",
         customListId,
+        customListName: selectedCustomList?.name,
         forceCloseCurrent,
       };
     }
@@ -383,8 +450,6 @@ export default function Index() {
         const listId = mode.replace("custom_list_", "");
         setPracticeMode("custom");
         setActiveChannel("custom");
-        setCustomPracticeActive(true);
-        setForeignPracticeActive(false);
         setSelectedForeignOrigin(null);
         setSelectedForeignOriginDetails(null);
 
@@ -403,8 +468,6 @@ export default function Index() {
         const origin = mode.replace("foreign_origin_", "");
         setPracticeMode("foreignOrigin");
         setActiveChannel("foreignOrigin");
-        setForeignPracticeActive(true);
-        setCustomPracticeActive(false);
         setSelectedCustomList(null);
 
         try {
@@ -434,7 +497,7 @@ export default function Index() {
     if (isStartingSession.current) return false;
     if (activeSessionId && activeSessionMode === mode) {
       if (!word && !loading) {
-        loadWord(getParamsFromMode(mode));
+        loadWord(getParamsFromMode(mode, activeSessionId));
       }
       return true;
     }
@@ -467,13 +530,18 @@ export default function Index() {
         buildSessionRequest(mode, options?.forceCloseCurrent ?? false),
       );
 
+
       if (result.action === "active_session_conflict") {
+        if (options?.forceCloseCurrent) {
+          throw new Error("Could not close the previous practice session.");
+        }
         setConflictError(null);
         setPendingConflict({
           activeMode: result.activeMode,
           activeSessionId: result.activeSessionId,
           requestedMode: mode,
         });
+        setStandardSessionActive(false);
         return false;
       }
 
@@ -494,18 +562,22 @@ export default function Index() {
         setActiveHistoryIndex(null);
         setAttempt("");
         setResult(null);
-        loadWord(getParamsFromMode(mode));
+        loadWord(getParamsFromMode(mode, id));
       } else {
         setSessionWordCount(0);
         setSessionCorrectCount(0);
         setHistory([]);
         setActiveHistoryIndex(null);
         resetWordState();
-        loadWord(getParamsFromMode(mode));
+        loadWord(getParamsFromMode(mode, id));
       }
       return true;
     } catch (err) {
       console.error("Failed to start/resume practice session:", err);
+      if (err instanceof FreeAttemptLimitError) {
+        if (user) setPaymentOpen(true);
+        else setAuthOpen(true);
+      }
       return false;
     } finally {
       isStartingSession.current = false;
@@ -523,7 +595,7 @@ export default function Index() {
   const handleConflictResume = useCallback(async () => {
     if (!pendingConflict) return;
 
-    setConflictLoading(true);
+    setConflictLoading("resume");
     setConflictError(null);
 
     try {
@@ -540,14 +612,14 @@ export default function Index() {
       console.error("Failed to resume current session:", err);
       setConflictError("Could not resume the current session. Please try again.");
     } finally {
-      setConflictLoading(false);
+      setConflictLoading(null);
     }
   }, [navigate, pendingConflict, resumePracticeMode]);
 
   const handleConflictStartNew = useCallback(async () => {
     if (!pendingConflict) return;
 
-    setConflictLoading(true);
+    setConflictLoading("startNew");
     setConflictError(null);
 
     try {
@@ -556,7 +628,11 @@ export default function Index() {
         activeSessionMode === pendingConflict.activeMode;
 
       if (isLocalCurrentSession) {
-        await endSession();
+        const ended = await endSession();
+        if (!ended) {
+          setConflictError("Could not end the current session. Please try again.");
+          return;
+        }
       } else if (pendingConflict.activeMode === "mock_bee") {
         await endMockBeeSession(pendingConflict.activeSessionId);
       }
@@ -566,90 +642,151 @@ export default function Index() {
         forceCloseCurrent: !isLocalCurrentSession && pendingConflict.activeMode !== "mock_bee",
       });
       if (started) {
+        if (pendingConflict.requestedMode.startsWith("standard_level_")) {
+          setStandardSessionActive(true);
+        }
         setPendingConflict(null);
       }
     } catch (err) {
-      console.error("Failed to switch sessions:", err);
-      setConflictError("Could not close the current session and start the new one.");
+      console.error("Failed to start new session:", err);
+      setConflictError(err instanceof Error ? err.message : "Could not start a new session. Please try again.");
     } finally {
-      setConflictLoading(false);
+      setConflictLoading(null);
     }
-  }, [activeSessionId, activeSessionMode, pendingConflict, prepareUiForMode]);
+  }, [
+    activeSessionId,
+    activeSessionMode,
+    endSession,
+    pendingConflict,
+    prepareUiForMode,
+    startSession,
+  ]);
 
   const handleConflictCancel = useCallback(() => {
     setConflictError(null);
-
-    if (
-      pendingConflict &&
-      activeSessionId === pendingConflict.activeSessionId &&
-      activeSessionMode === pendingConflict.activeMode
-    ) {
-      void resumePracticeMode(pendingConflict.activeMode);
-    }
-
     setPendingConflict(null);
-  }, [activeSessionId, activeSessionMode, pendingConflict, resumePracticeMode]);
+  }, []);
 
   // Recover active session on page reload/startup
   useEffect(() => {
+    if (authLoading) return;
+
     const saved = localStorage.getItem("active_session_recovery");
     if (saved) {
       void (async () => {
         try {
-        const {
-          activeSessionId: id,
-          activeSessionMode: savedMode,
-          sessionStartTime: start,
-        } = JSON.parse(saved);
+          const {
+            userId: savedUserId,
+            activeSessionId: id,
+            activeSessionMode: savedMode,
+            sessionStartTime: start,
+            standardSessionActive: savedStandardActive,
+            activeChannel: savedActiveChannel,
+            practiceMode: savedPracticeMode,
+            level: savedLevel,
+            customPracticeActive: savedCustomPracticeActive,
+            selectedCustomList: savedSelectedCustomList,
+            foreignPracticeActive: savedForeignPracticeActive,
+            selectedForeignOrigin: savedSelectedForeignOrigin,
+          } = JSON.parse(saved);
 
-        if (id && start) {
-          const session = await fetchPracticeSession(id);
-          if (!session || session.status !== "active") {
-            clearRecoveredSessionState("This session was closed in another tab.");
+          if (savedUserId && user?.id && savedUserId !== user.id) {
+            clearRecoveredSessionState();
             setIsRecovering(false);
             return;
           }
 
-          const restoredMode = getRecoveredModeFromSession(session, savedMode);
-          await prepareUiForMode(restoredMode);
+          // Restore UI state regardless of active session
+          if (savedActiveChannel) setActiveChannel(savedActiveChannel);
+          if (savedPracticeMode) setPracticeMode(savedPracticeMode);
+          if (savedLevel !== undefined) setLevel(savedLevel);
+          if (savedCustomPracticeActive !== undefined) setCustomPracticeActive(savedCustomPracticeActive);
+          if (savedSelectedCustomList) setSelectedCustomList(savedSelectedCustomList);
+          if (savedForeignPracticeActive !== undefined) setForeignPracticeActive(savedForeignPracticeActive);
+          if (savedSelectedForeignOrigin) setSelectedForeignOrigin(savedSelectedForeignOrigin);
+          if (savedStandardActive !== undefined) setStandardSessionActive(savedStandardActive);
 
-          setActiveSessionId(id);
-          setActiveSessionMode(restoredMode || null);
-          setSessionStartTime(start);
-          const attempts = await fetchSessionAttempts(id);
-          if (attempts && attempts.length > 0) {
-            const historyEntries = attempts.map(historyEntryFromAttempt);
-            setHistory(historyEntries);
-            setSessionWordCount(historyEntries.length);
-            setSessionCorrectCount(
-              historyEntries.filter((entry) => entry.result?.correctness?.isCorrect).length,
-            );
-            setActiveHistoryIndex(historyEntries.length - 1);
-            const lastEntry = historyEntries[historyEntries.length - 1];
-            setWord(lastEntry.word);
-            setAttempt(lastEntry.attempt);
-            setResult(lastEntry.result);
+          if (id && start) {
+            const session = await fetchPracticeSession(id);
+            if (!session || session.status !== "active") {
+              clearRecoveredSessionState(
+                session?.status === "abandoned"
+                  ? "This session ended after 30 minutes without a word submission. Start a new session to continue."
+                  : "This session is no longer active. Start a new session to continue.",
+                { preserveHistory: true },
+              );
+              setIsRecovering(false);
+              return;
+            }
+
+            const restoredMode = getRecoveredModeFromSession(session, savedMode);
+            await prepareUiForMode(restoredMode);
+
+            setActiveSessionId(id);
+            setActiveSessionMode(restoredMode || null);
+            if (restoredMode?.startsWith("standard_level_")) {
+              setStandardSessionActive(savedStandardActive ?? true);
+            } else if (restoredMode?.startsWith("custom_list_")) {
+              setCustomPracticeActive(savedCustomPracticeActive ?? true);
+            } else if (restoredMode?.startsWith("foreign_origin_")) {
+              setForeignPracticeActive(savedForeignPracticeActive ?? true);
+            }
+            setSessionStartTime(start);
+            console.log("Recovered active session:", { id, restoredMode, start });
+            const attempts = await fetchSessionAttempts(id);
+            if (attempts && attempts.length > 0) {
+              const historyEntries = attempts.map(historyEntryFromAttempt);
+              const savedMap = localStorage.getItem("active_sessions_map");
+              const map = savedMap ? JSON.parse(savedMap) : {};
+              const savedSessionData = map[restoredMode];
+              if (savedSessionData?.history && Array.isArray(savedSessionData.history)) {
+                historyEntries.forEach((entry, i) => {
+                  const existing = savedSessionData.history[i];
+                  if (existing && existing.word?.challengeId) {
+                    entry.word.challengeId = existing.word.challengeId;
+                  }
+                });
+              }
+              setHistory(historyEntries);
+              setSessionWordCount(historyEntries.length);
+              setSessionCorrectCount(
+                historyEntries.filter((entry) => entry.result?.correctness?.isCorrect).length,
+              );
+              console.log("Recovered session history:", historyEntries);
+              const savedIndexStr = localStorage.getItem("active_session_history_index");
+              const savedIndex = savedIndexStr && savedIndexStr !== "undefined" ? JSON.parse(savedIndexStr) : null;
+
+              if (savedIndex === null) {
+                setActiveHistoryIndex(null);
+                loadWord(getParamsFromMode(restoredMode, id));
+              } else {
+                setActiveHistoryIndex(historyEntries.length - 1);
+                const lastEntry = historyEntries[historyEntries.length - 1];
+                setWord(lastEntry.word);
+                setAttempt(lastEntry.attempt);
+                setResult(lastEntry.result);
+              }
+            } else {
+              setSessionWordCount(0);
+              setSessionCorrectCount(0);
+              setHistory([]);
+              setActiveHistoryIndex(null);
+              loadWord(getParamsFromMode(restoredMode, id));
+            }
+            setIsRecovering(false);
           } else {
-            setSessionWordCount(0);
-            setSessionCorrectCount(0);
-            setHistory([]);
-            setActiveHistoryIndex(null);
-            loadWord(getParamsFromMode(restoredMode));
+            setIsRecovering(false);
           }
-          setIsRecovering(false);
-        } else {
-          setIsRecovering(false);
-        }
         } catch (e) {
           console.error("Failed to recover active session:", e);
-          setError("Could not restore the previous session. Please start again.");
+          clearRecoveredSessionState("Could not restore the previous session. Please start again.");
           setIsRecovering(false);
         }
       })();
     } else {
       setIsRecovering(false);
     }
-  }, [clearRecoveredSessionState, getRecoveredModeFromSession, prepareUiForMode]);
+  }, [authLoading, user?.id, clearRecoveredSessionState, getRecoveredModeFromSession, prepareUiForMode]);
 
   useEffect(() => {
     if (isRecovering || activeSessionId) return;
@@ -669,21 +806,26 @@ export default function Index() {
   // Sync active session info and history to localStorage for recovery
   useEffect(() => {
     if (isRecovering) return;
+
+    // Always save UI state so it survives reloads even without an active session
+    localStorage.setItem("active_session_recovery", JSON.stringify({
+      userId: user?.id,
+      activeSessionId,
+      activeSessionMode,
+      sessionStartTime,
+      sessionWordCount,
+      sessionCorrectCount,
+      activeChannel,
+      practiceMode,
+      level,
+      customPracticeActive,
+      selectedCustomList,
+      foreignPracticeActive,
+      selectedForeignOrigin,
+      standardSessionActive,
+    }));
+
     if (activeSessionId && sessionStartTime) {
-      localStorage.setItem("active_session_recovery", JSON.stringify({
-        activeSessionId,
-        activeSessionMode,
-        sessionStartTime,
-        sessionWordCount,
-        sessionCorrectCount,
-        activeChannel,
-        practiceMode,
-        level,
-        customPracticeActive,
-        selectedCustomList,
-        foreignPracticeActive,
-        selectedForeignOrigin,
-      }));
       localStorage.setItem("active_session_history", JSON.stringify(history));
       localStorage.setItem("active_session_history_index", JSON.stringify(activeHistoryIndex));
 
@@ -703,7 +845,6 @@ export default function Index() {
         localStorage.setItem("active_sessions_map", JSON.stringify(map));
       }
     } else {
-      localStorage.removeItem("active_session_recovery");
       localStorage.removeItem("active_session_history");
       localStorage.removeItem("active_session_history_index");
     }
@@ -720,11 +861,21 @@ export default function Index() {
     selectedCustomList,
     foreignPracticeActive,
     selectedForeignOrigin,
+    standardSessionActive,
     history,
     activeHistoryIndex,
+    user?.id,
   ]);
 
   // Reset active session local storage on login/logout to prevent stale state inheritance
+  useEffect(() => {
+    if (!authLoading && !user) {
+      clearRecoveredSessionState();
+      setActiveChannel(null); // Return to dashboard on logout
+      setIsRecovering(false);
+    }
+  }, [user, authLoading, clearRecoveredSessionState]);
+
   useEffect(() => {
     if (authLoading) return;
 
@@ -778,27 +929,49 @@ export default function Index() {
     }
   }, [profile?.theme_preference]);
 
-  // Fetch user statistics from backend when user logs in
+  // Load the authoritative Standard Practice allowance for either an account or guest.
   useEffect(() => {
-    if (user) {
-      fetchUserStatistics()
-        .then((stats) => {
-          if (stats) {
-            rewards.syncWithDatabase(stats);
-            setStandardWordsUsed(
-              stats
-                .filter((stat) => stat.mode === "standard" || stat.mode.startsWith("standard_level_"))
-                .reduce((total, stat) => total + stat.total_attempts, 0),
-            );
+    if (authLoading) return;
+    let cancelled = false;
+
+    void (async () => {
+      if (user?.id) {
+        try {
+          await claimGuestPractice();
+          const stats = await fetchUserStatistics();
+          if (cancelled) return;
+          rewards.syncWithDatabase(stats);
+          setStandardWordsUsed(
+            stats
+              .filter((stat) => stat.mode === "standard" || stat.mode.startsWith("standard_level_"))
+              .reduce((total, stat) => total + stat.total_attempts, 0),
+          );
+        } catch (err) {
+          console.error("Failed to transfer guest practice or sync statistics:", err);
+          if (!cancelled) {
+            setStandardWordsUsed(STANDARD_FREE_WORD_LIMIT);
+            setError("Could not restore your practice allowance. Please refresh and try again.");
           }
-        })
-        .catch((err) => {
-          console.error("Failed to sync rewards statistics with backend:", err);
-        });
-    } else {
-      setStandardWordsUsed(0);
-    }
-  }, [user, rewards.syncWithDatabase]);
+        }
+        return;
+      }
+
+      try {
+        const usage = await fetchGuestUsage();
+        if (!cancelled) setStandardWordsUsed(usage.attemptsUsed);
+      } catch (err) {
+        console.error("Failed to start guest practice:", err);
+        if (!cancelled) {
+          setStandardWordsUsed(STANDARD_FREE_WORD_LIMIT);
+          setError("Guest practice is temporarily unavailable. Please sign in or try again.");
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, user?.id, rewards.syncWithDatabase]);
 
   const handleThemeChange = async (newTheme: ThemeKey) => {
     setTheme(newTheme);
@@ -817,9 +990,15 @@ export default function Index() {
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const resetWordState = () => {
+  const resetWordState = (options: { preserveSessionNotice?: boolean } = {}) => {
+    wordStateVersionRef.current += 1;
+    prefetchedWordRef.current = null;
+    submitAbortRef.current?.abort();
+    submitAbortRef.current = null;
+    setSubmitting(false);
     setWord(null);
     setResult(null);
+    setStreamErrors([]);
     setAttempt("");
     setDefOpen(false);
     setExOpen(false);
@@ -827,6 +1006,7 @@ export default function Index() {
     setPosOpen(false);
     setAudioError(null);
     setError(null);
+    if (!options.preserveSessionNotice) setSessionNotice(null);
     if (audioUrlRef.current) {
       URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = null;
@@ -839,13 +1019,20 @@ export default function Index() {
     };
     repeatWordCount.current = 0;
     usedVoiceInput.current = false;
+    attemptPersistenceStartedRef.current = false;
+    attemptSavePendingRef.current = false;
     setSession((s) => ({ ...s, previousAttemptsOnThisWord: 0 }));
   };
 
   const loadWord = useCallback(async (params: NextWordParams) => {
+    wordStateVersionRef.current += 1;
+    submitAbortRef.current?.abort();
+    submitAbortRef.current = null;
+    setSubmitting(false);
     setLoading(true);
     setError(null);
     setResult(null);
+    setStreamErrors([]);
     setAttempt("");
     setDefOpen(false);
     setExOpen(false);
@@ -864,9 +1051,18 @@ export default function Index() {
     };
     repeatWordCount.current = 0;
     usedVoiceInput.current = false;
+    attemptPersistenceStartedRef.current = false;
+    attemptSavePendingRef.current = false;
     setSession((s) => ({ ...s, previousAttemptsOnThisWord: 0 }));
     try {
-      const w = await fetchNextWord(params);
+      const requestKey = nextWordRequestKey(params);
+      const prefetched = prefetchedWordRef.current;
+      prefetchedWordRef.current = null;
+      const w = await (
+        prefetched?.key === requestKey
+          ? prefetched.promise
+          : fetchNextWord(params)
+      );
       setWord(w);
     } catch {
       setError("Could not load word. Check your connection.");
@@ -875,6 +1071,20 @@ export default function Index() {
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   }, []);
+
+  const prefetchNextWord = useCallback(
+    () => {
+      const modeKey = activeSessionMode || (practiceMode === "standard" ? `standard_level_${level}` : "");
+      const params = getParamsFromMode(modeKey, activeSessionId);
+      const requestKey = nextWordRequestKey(params);
+      if (prefetchedWordRef.current?.key === requestKey) return;
+      prefetchedWordRef.current = {
+        key: requestKey,
+        promise: fetchNextWord(params),
+      };
+    },
+    [activeSessionMode, practiceMode, level, activeSessionId],
+  );
 
   const openUpgradeFlow = () => {
     if (!user) {
@@ -906,14 +1116,16 @@ export default function Index() {
   };
 
   const handleStopStandardSession = async () => {
-    await endSession();
+    const ended = await endSession();
+    if (!ended) return;
+
     if (history.length > 0) {
       downloadSessionReport(history);
     }
     setStandardSessionActive(false);
     setHistory([]);
     setActiveHistoryIndex(null);
-    resetWordState();
+    resetWordState({ preserveSessionNotice: true });
   };
 
   const handleSelectChannel = (selection: ChannelSelection) => {
@@ -972,24 +1184,42 @@ export default function Index() {
     }
   };
 
-  const handleBackToDashboard = async () => {
-    await endSession();
-    setActiveChannel(null);
-    setCustomPracticeActive(false);
-    setForeignPracticeActive(false);
-    setStandardSessionActive(false);
-    // Keep session history across dashboard visits; clears on reload.
-    setActiveHistoryIndex(null);
-    resetWordState();
+  const handleChangePracticeSource = (source: string) => {
+    if (source === "custom") setCustomPracticeActive(false);
+    if (source === "foreignOrigin") setForeignPracticeActive(false);
   };
 
-  const handleStartCustomPractice = () => {
+  const handleBackToDashboard = async () => {
+    const inActivePractice = standardSessionActive || customPracticeActive || foreignPracticeActive;
+
+    if (inActivePractice) {
+      // User is in the active practice view — keep session alive, return to level/mode selector.
+      setStandardSessionActive(false);
+      setCustomPracticeActive(false);
+      setForeignPracticeActive(false);
+      setActiveHistoryIndex(null);
+      resetWordState();
+    } else {
+      // User is on the level/mode selector or has no active practice — go back to main dashboard.
+      const ended = await endSession();
+      if (!ended) return;
+
+      setActiveChannel(null);
+      setStandardSessionActive(false);
+      setCustomPracticeActive(false);
+      setForeignPracticeActive(false);
+      setActiveHistoryIndex(null);
+      resetWordState();
+    }
+  };
+
+  const handleStartCustomPractice = async () => {
     if (!selectedCustomList) return;
     setCustomPracticeActive(true);
     startSession(`custom_list_${selectedCustomList.id}`);
   };
 
-  const handleStartForeignPractice = () => {
+  const handleStartForeignPractice = async () => {
     if (!selectedForeignOrigin) {
       setError("Please select an origin first.");
       return;
@@ -1008,127 +1238,356 @@ export default function Index() {
     return level || undefined;
   };
 
-  const handleSubmit = async () => {
-    if (!word || !attempt.trim()) return;
+  const performSubmit = async () => {
+    const rawAttempt = attempt || inputRef.current?.value || "";
+    if (!word || !rawAttempt.trim() || submitInFlightRef.current) return;
     if (standardLimitReached) {
       openUpgradeFlow();
       return;
     }
+    const active = activeSessionId
+      ? { id: activeSessionId, modeKey: activeSessionMode || practiceMode }
+      : null;
+    if (!active) {
+      setError("Start a practice session before submitting a spelling.");
+      return;
+    }
+
+    submitInFlightRef.current = true;
+    if (!(await ensureSessionIsStillActive())) {
+      submitInFlightRef.current = false;
+      return;
+    }
+    submitAbortRef.current?.abort();
+    const controller = new AbortController();
+    submitAbortRef.current = controller;
     setSubmitting(true);
     setError(null);
-    try {
-      if (!(await ensureSessionIsStillActive())) {
-        return;
-      }
+    setResult(null);
+    setStreamErrors([]);
+    const childAttempt = rawAttempt.trim().toLowerCase();
+    const lvl = effectiveLevel();
+    const supportSnapshot = { ...supportsViewed.current };
+    const repeatCount = session.previousAttemptsOnThisWord;
+    const usedVoiceInput = usedVoiceInputRef.current;
+    const wordStateVersion = wordStateVersionRef.current;
+    const isCurrentWord = () => wordStateVersionRef.current === wordStateVersion;
+    let completedCoaching: CoachingResponse | null = null;
+    // For challengeId flow: word.word is empty until the done event reveals it.
+    // We track it separately so applySuccessfulAttempt and prefetch use the real word.
+    let resolvedWordText = word.word;
 
-      const childProfile = profile ? {
-        childId: profile.child_id || "c1",
-        age: profile.age || 10,
-        grade: profile.grade || "5",
-        spellingLevel: profile.spelling_level || "competition",
-      } : DEFAULT_PROFILE;
+    let localAttemptApplied = false;
 
-      const lvl = effectiveLevel();
-      const res = await submitSpellingAttempt({
-        targetWord: word.word,
-        childAttempt: attempt.trim().toLowerCase(),
-        childProfile,
-        supportsUsed: { ...supportsViewed.current },
-        sessionContext: session,
-        definition: word.definition,
-        exampleSentence: word.exampleSentence,
-        origin: word.origin,
-        partOfSpeech: word.partOfSpeech,
-        level: lvl,
-      });
-      setResult(res);
+    const applySuccessfulAttempt = (res: CoachingResponse) => {
+      // Use resolvedWordText so the history entry always contains the revealed word,
+      // not the stale empty placeholder captured in this closure at submit time.
       setHistory((h) => {
-        const next = [...h, { word, attempt: attempt.trim(), result: res }];
-        setActiveHistoryIndex(next.length - 1);
+        const next = [...h, { word: { ...word, word: resolvedWordText }, attempt: childAttempt, result: res }];
+        if (isCurrentWord()) setActiveHistoryIndex(next.length - 1);
         return next;
       });
-      const isCorrect = !!res.correctness?.isCorrect;
+
+      const currentActive = activePracticeSessionRef.current;
+      if (active && currentActive?.id === active.id) {
+        const nextActive = {
+          ...currentActive,
+          totalAttempts: currentActive.totalAttempts + 1,
+          totalCorrect:
+            currentActive.totalCorrect + (res.correctness.isCorrect ? 1 : 0),
+        };
+        setActivePracticeSession(nextActive);
+        activePracticeSessionRef.current = nextActive;
+      }
 
       if (practiceMode === "standard" && !subscribed) {
         setStandardWordsUsed((count) => count + 1);
       }
 
-      if (activeSessionId) {
-        setSessionWordCount((c) => c + 1);
-        if (isCorrect) {
-          setSessionCorrectCount((c) => c + 1);
-        }
-
-        recordWordAttempt({
-          sessionId: activeSessionId,
-          targetWord: word.word,
-          childAttempt: attempt.trim().toLowerCase(),
-          isCorrect,
-          level: lvl,
-          mode: activeSessionMode || practiceMode,
-          definitionViewed: supportsViewed.current.definitionViewed,
-          exampleViewed: supportsViewed.current.exampleViewed,
-          originViewed: supportsViewed.current.originViewed,
-          partOfSpeechViewed: supportsViewed.current.partOfSpeechViewed,
-          repeatWordCount: repeatWordCount.current,
-          usedVoiceInput: usedVoiceInput.current,
-          coachingResponse: res.coachingText?.shortFeedback || "",
-        }).catch((err) => {
-          console.error("Failed to save attempt in DB:", err);
-        });
-      }
-
-      if (isCorrect) {
-        if (lvl !== 3) playCheer();
+      if (res.correctness?.isCorrect) {
         rewards.recordCorrect(activeSessionMode || practiceMode, lvl);
-        // Confetti only for Level 1 (younger kids). L2/L3 get streaks + fanfare instead.
-        if (lvl === 1) {
-          const fire = (origin: { x: number; y: number }) =>
-            confetti({
-              particleCount: 80,
-              spread: 70,
-              startVelocity: 45,
-              origin,
-              zIndex: 9999,
-              colors: ["#f59e0b", "#10b981", "#6366f1", "#ef4444", "#eab308"],
-            });
-          fire({ x: 0.2, y: 0.7 });
-          fire({ x: 0.5, y: 0.6 });
-          fire({ x: 0.8, y: 0.7 });
-          setTimeout(() => fire({ x: 0.5, y: 0.5 }), 200);
-        }
       } else {
         rewards.recordIncorrect(activeSessionMode || practiceMode, lvl);
       }
-      setSession((s) => ({
-        ...s,
-        previousAttemptsOnThisWord: s.previousAttemptsOnThisWord + 1,
-        recentlyPracticedWords: [...s.recentlyPracticedWords.slice(-9), word.word],
-      }));
-    } catch {
-      setError("Could not submit. Please try again.");
+    };
+
+    const applySessionRefresh = async (persisted: PersistedAttemptResult) => {
+      const currentActive = activePracticeSessionRef.current;
+      if (active && currentActive?.id === active.id && persisted.session) {
+        const refreshedStartedAt = new Date(persisted.session.session_started_at).getTime();
+        const nextActive = {
+          ...currentActive,
+          startedAt: Number.isNaN(refreshedStartedAt)
+            ? currentActive.startedAt
+            : refreshedStartedAt,
+          totalAttempts: Math.max(
+            currentActive.totalAttempts,
+            persisted.session.total_words_attempted ?? 0,
+          ),
+          totalCorrect: Math.max(
+            currentActive.totalCorrect,
+            persisted.session.total_correct ?? 0,
+          ),
+        };
+        setActivePracticeSession(nextActive);
+        activePracticeSessionRef.current = nextActive;
+
+        try {
+          const attempts = await fetchSessionAttempts(active.id);
+          if (attempts && attempts.length > 0) {
+            const historyEntries = attempts.map(historyEntryFromAttempt);
+            setHistory((prev) => {
+              const merged = historyEntries.map((entry, i) => {
+                const existing = prev[i];
+                if (existing && existing.word.challengeId) {
+                  return { ...entry, word: { ...entry.word, challengeId: existing.word.challengeId } };
+                }
+                return entry;
+              });
+              setActiveHistoryIndex(merged.length - 1);
+              return merged;
+            });
+          }
+        } catch (err) {
+          console.error("Failed to fetch history after attempt", err);
+        }
+      }
+      if (persisted.sessionRefreshError && isCurrentWord()) {
+        console.error("Attempt saved, but session refresh failed:", persisted.sessionRefreshError);
+        setError("Your attempt was saved, but session progress could not be refreshed.");
+      }
+      if (isCurrentWord()) {
+        setPersistingAttempt(false);
+      }
+    };
+
+    const trackPersistence = (
+      attemptSaved: Promise<void>,
+      persistence: Promise<PersistedAttemptResult>,
+    ) => {
+      const attemptPersistenceTask = attemptSaved.then(
+        () => {
+          attemptSavePendingRef.current = false;
+          persistenceFailureRef.current = null;
+          setPersistenceFailed(false);
+        },
+        (persistenceError) => {
+          const error = persistenceError instanceof Error
+            ? persistenceError
+            : new Error("Attempt persistence failed.");
+          attemptSavePendingRef.current = false;
+          persistenceFailureRef.current = error;
+          console.error(error);
+          setPersistingAttempt(false);
+          if (error instanceof InactivePracticeSessionError) {
+            clearRecoveredSessionState(
+              "This session ended after 30 minutes without a word submission. Start a new session to continue.",
+              { preserveHistory: true },
+            );
+            return;
+          }
+          setPersistenceFailed(true);
+          setError("Coaching completed, but this attempt could not be saved. You cannot continue until it is resolved.");
+        },
+      );
+      persistenceQueueRef.current = attemptPersistenceTask.catch((queueError) => {
+        console.error("Attempt persistence queue failed:", queueError);
+      });
+      void persistence.then(applySessionRefresh, () => {
+        // Attempt persistence failures are handled by attemptSaved above.
+      });
+    };
+
+    try {
+      // Use challengeId when the word was fetched with a sessionId; fall back to targetWord.
+      const coachingRequest: CoachingRequest = {
+        ...(word.challengeId
+          ? { challengeId: word.challengeId }
+          : { targetWord: word.word }),
+        childAttempt,
+        level: lvl,
+        mode: practiceMode,
+        definitionViewed: supportSnapshot.definitionViewed,
+        exampleViewed: supportSnapshot.exampleViewed,
+        originViewed: supportSnapshot.originViewed,
+        partOfSpeechViewed: supportSnapshot.partOfSpeechViewed ?? false,
+        repeatWordCount: repeatCount,
+        usedVoiceInput: usedVoiceInput,
+        ...(activeSessionId ? { sessionId: activeSessionId } : {}),
+      };
+      const streamHandlers: SpellingCoachStreamHandlers = {
+        signal: controller.signal,
+        onMeta: (meta, partialResult) => {
+          if (meta.targetWord) {
+            resolvedWordText = meta.targetWord;
+            if (isCurrentWord()) {
+              setWord((w) => w ? { ...w, word: meta.targetWord! } : w);
+            }
+          }
+          if (isCurrentWord() && meta.isCorrect) {
+            if (lvl !== 3) {
+              playCheer();
+              const fire = (origin: { x: number; y: number }) =>
+                confetti({
+                  particleCount: 80,
+                  spread: 70,
+                  startVelocity: 45,
+                  origin,
+                  zIndex: 9999,
+                  colors: ["#f59e0b", "#10b981", "#6366f1", "#ef4444", "#eab308"],
+                });
+              fire({ x: 0.2, y: 0.7 });
+              fire({ x: 0.5, y: 0.6 });
+              fire({ x: 0.8, y: 0.7 });
+              setTimeout(() => fire({ x: 0.5, y: 0.5 }), 200);
+            }
+          }
+          if (isCurrentWord()) setResult(partialResult);
+        },
+        onPrecomputed: (partialResult) => {
+          if (isCurrentWord()) setResult(partialResult);
+        },
+        onSection: (_section, partialResult) => {
+          if (isCurrentWord()) setResult(partialResult);
+        },
+        onSectionError: ({ section }) => {
+          if (!isCurrentWord()) return;
+          setStreamErrors((current) =>
+            current.includes(section) ? current : [...current, section],
+          );
+        },
+        onDone: (finalResult, doneEvent) => {
+          completedCoaching = finalResult;
+          if (doneEvent) {
+            resolvedWordText = doneEvent.targetWord;
+          }
+          if (active) {
+            attemptPersistenceStartedRef.current = true;
+            attemptSavePendingRef.current = true;
+            persistenceFailureRef.current = null;
+            setPersistenceFailed(false);
+            setPersistingAttempt(true);
+          }
+          if (isCurrentWord()) {
+            setResult(finalResult);
+            setSubmitting(false);
+          }
+        },
+      };
+      const previousPersistence = persistenceQueueRef.current;
+      let resolveAttemptSaved: (() => void) | null = null;
+      let rejectAttemptSaved: ((reason?: unknown) => void) | null = null;
+      const attemptSaved = active
+        ? new Promise<void>((resolve, reject) => {
+          resolveAttemptSaved = resolve;
+          rejectAttemptSaved = reject;
+        })
+        : null;
+      const completed = active
+        ? await submitAndRecordSpellingAttempt(coachingRequest, {
+          sessionId: active.id,
+          targetWord: resolvedWordText,
+          childAttempt,
+          level: lvl,
+          mode: active.modeKey,
+          definitionViewed: supportSnapshot.definitionViewed,
+          exampleViewed: supportSnapshot.exampleViewed,
+          originViewed: supportSnapshot.originViewed,
+          partOfSpeechViewed: supportSnapshot.partOfSpeechViewed ?? false,
+          repeatWordCount: repeatCount,
+          usedVoiceInput,
+        }, streamHandlers, {
+          waitForPreviousPersistence: previousPersistence,
+          onAttemptSaved: () => {
+            attemptSavePendingRef.current = false;
+            if (completedCoaching && !localAttemptApplied) {
+              localAttemptApplied = true;
+              applySuccessfulAttempt(completedCoaching);
+              prefetchNextWord();
+            }
+            resolveAttemptSaved?.();
+          },
+        })
+        : null;
+      const res = completed?.coaching ?? await submitSpellingAttempt(coachingRequest, streamHandlers);
+      if (completed && attemptSaved) {
+        void completed.persistence.catch((persistenceError) => {
+          rejectAttemptSaved?.(persistenceError);
+        });
+        trackPersistence(attemptSaved, completed.persistence);
+      } else {
+        applySuccessfulAttempt(res);
+        prefetchNextWord();
+      }
+    } catch (submitError) {
+      if (controller.signal.aborted) return;
+      console.error(submitError);
+      if (submitError instanceof FreeAttemptLimitError) {
+        setStandardWordsUsed(STANDARD_FREE_WORD_LIMIT);
+        if (user) setPaymentOpen(true);
+        else setAuthOpen(true);
+      }
+      if (isCurrentWord()) {
+        const localIsCorrect = childAttempt === resolvedWordText.toLowerCase();
+        const fallbackCoaching: CoachingResponse = {
+          correctness: { isCorrect: localIsCorrect, reinforceSuccess: localIsCorrect },
+          missAnalysis: {
+            summary: localIsCorrect ? "Correct." : "Incorrect.",
+            primaryErrorType: null,
+            secondaryErrorTypes: [],
+            errorTypeEvidence: {},
+            primaryErrorFocus: "",
+            likelyWrongWordInterpretation: false,
+            usedMeaningDisambiguationWell: false,
+          },
+          wordTeaching: {
+            formTeaching: { summary: "", patterns: [], chunks: [], sayAloudFocus: "" },
+            conceptTeaching: { summary: "", meaningFocus: "", originFocus: "", morphologyFocus: "", originLabels: [], morphologyLabels: [], morphemeGlosses: [] },
+          },
+          coachingText: {
+            shortFeedback: localIsCorrect ? "Correct!" : "Not quite!",
+            fullExplanation: "",
+            memoryTip: "",
+          },
+        };
+        setResult(completedCoaching || fallbackCoaching);
+        setError(
+          attemptPersistenceStartedRef.current
+            ? "Coaching completed, but this attempt could not be saved."
+            : submitError instanceof Error
+              ? submitError.message
+              : "Could not submit. Please try again.",
+        );
+      }
     } finally {
-      setSubmitting(false);
+      submitInFlightRef.current = false;
+      if (submitAbortRef.current === controller) {
+        submitAbortRef.current = null;
+        if (isCurrentWord()) setSubmitting(false);
+      }
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (submitTaskRef.current) return submitTaskRef.current;
+    const task = performSubmit();
+    submitTaskRef.current = task;
+    try {
+      await task;
+    } finally {
+      if (submitTaskRef.current === task) submitTaskRef.current = null;
     }
   };
 
   const handleNextWord = async () => {
+    if (submitting || persistingAttempt || persistenceFailed) return;
     if (standardLimitReached) {
       openUpgradeFlow();
       return;
     }
-    if (!(await ensureSessionIsStillActive())) {
-      return;
-    }
 
     setActiveHistoryIndex(null);
-    if (practiceMode === "custom" && customPracticeActive && selectedCustomList) {
-      loadWord({ customListId: selectedCustomList.id });
-    } else if (practiceMode === "foreignOrigin" && foreignPracticeActive && selectedForeignOrigin) {
-      loadWord({ foreignOrigin: selectedForeignOrigin.origin });
-    } else {
-      loadWord({ level });
-    }
+    loadWord(getParamsFromMode(activeSessionMode || (practiceMode === "standard" ? `standard_level_${level}` : ""), activeSessionId));
   };
 
   const playPronunciation = async () => {
@@ -1137,13 +1596,42 @@ export default function Index() {
     setAudioError(null);
     repeatWordCount.current = repeatWordCount.current + 1;
     try {
-      const url = await fetchPronunciationAudio(word.word);
-      if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
-      audioUrlRef.current = url;
+      // If no challengeId/session, fall back to browser TTS so the button always works
+      if (!word.challengeId || !activeSessionId) {
+        const utterance = new SpeechSynthesisUtterance(word.word || "");
+        utterance.lang = "en-US";
+        utterance.rate = 0.85;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utterance);
+        return;
+      }
+      let url = audioUrlRef.current;
+      if (!url || currentAudioChallengeIdRef.current !== word.challengeId) {
+        url = await fetchPronunciationAudio({ challengeId: word.challengeId, sessionId: activeSessionId });
+        if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
+        audioUrlRef.current = url;
+        currentAudioChallengeIdRef.current = word.challengeId;
+      }
+
+      if (audioInstanceRef.current) {
+        audioInstanceRef.current.pause();
+        audioInstanceRef.current.currentTime = 0;
+      }
+
       const audio = new Audio(url);
+      audioInstanceRef.current = audio;
       await audio.play();
     } catch {
-      setAudioError("Could not play audio.");
+      // If audio fetch fails, fall back to TTS
+      try {
+        const utterance = new SpeechSynthesisUtterance(word.word || "");
+        utterance.lang = "en-US";
+        utterance.rate = 0.85;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utterance);
+      } catch {
+        setAudioError("Could not play audio.");
+      }
     } finally {
       setAudioLoading(false);
     }
@@ -1194,6 +1682,10 @@ export default function Index() {
           onSelect={(i) => {
             const entry = history[i];
             if (!entry) return;
+            submitAbortRef.current?.abort();
+            submitAbortRef.current = null;
+            setSubmitting(false);
+            setStreamErrors([]);
             setWord(entry.word);
             setAttempt(entry.attempt);
             setResult(entry.result);
@@ -1201,7 +1693,11 @@ export default function Index() {
           }}
         />
       )}
-      {activeChannel && <WordSearchSidebar />}
+      {activeChannel && (
+        <WordSearchSidebar
+          key={`${activeChannel}-${practiceMode}-${effectiveLevel()}-${standardSessionActive}-${customPracticeActive}-${foreignPracticeActive}`}
+        />
+      )}
       {/* Top app bar — webapp style */}
       <Header
         theme={theme}
@@ -1285,10 +1781,7 @@ export default function Index() {
               </p>
             </div>
             <button
-              onClick={() => {
-                setCustomPracticeActive(false);
-                resetWordState();
-              }}
+              onClick={() => void handleChangePracticeSource("custom")}
               className="text-xs font-medium text-primary hover:underline"
             >
               Change List
@@ -1308,10 +1801,7 @@ export default function Index() {
               </p>
             </div>
             <button
-              onClick={() => {
-                setForeignPracticeActive(false);
-                resetWordState();
-              }}
+              onClick={() => void handleChangePracticeSource("foreign")}
               className="text-xs font-medium text-primary hover:underline"
             >
               Change Origin
@@ -1385,12 +1875,23 @@ export default function Index() {
         )}
 
         {/* Error */}
-        {showPractice && error && (
+        {error && (
           <div className="rounded-xl bg-destructive/10 border border-destructive/30 p-4 text-center text-sm text-destructive mb-4">
             {error}
-            <button onClick={handleNextWord} className="block mx-auto mt-2 underline text-xs">
-              Retry
-            </button>
+            {!persistenceFailed && activeSessionId && (
+              <button
+                onClick={handleNextWord}
+                className="block mx-auto mt-2 underline text-xs"
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        )}
+
+        {sessionNotice && (
+          <div className="rounded-xl bg-primary/10 border border-primary/30 p-4 text-center text-sm text-foreground mb-4">
+            {sessionNotice}
           </div>
         )}
 
@@ -1487,9 +1988,10 @@ export default function Index() {
                     {submitting ? "Checking…" : "Submit"}
                   </button>
                   <VoiceMic
-                    targetWord={word.word}
-                    disabled={submitting || audioLoading}
+                    challenge={{ challengeId: word.challengeId ?? "", sessionId: activeSessionId ?? "" }}
+                    disabled={submitting || audioLoading || !word.challengeId || !activeSessionId}
                     onSpellingAttempt={(parsed) => {
+                      usedVoiceInputRef.current = true;
                       setAttempt(parsed);
                       setTimeout(() => inputRef.current?.focus(), 50);
                     }}
@@ -1558,11 +2060,23 @@ export default function Index() {
                     </div>
                   </div>
                   <CoachingResult result={result} level={level} targetWord={word.word} />
+                  {streamErrors.length > 0 && (
+                    <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground/80">
+                      Some coaching details could not be loaded. You can continue with the feedback shown.
+                    </div>
+                  )}
                   <button
                     onClick={() => void handleNextWord()}
-                    className="w-full inline-flex items-center justify-center gap-2 rounded-lg py-3 font-semibold text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-all shadow-sm hover:shadow-md"
+                    disabled={submitting || persistingAttempt || persistenceFailed}
+                    className={cn(
+                      "w-full inline-flex items-center justify-center gap-2 rounded-lg py-3 font-semibold text-sm transition-all shadow-sm",
+                      (submitting || persistingAttempt || persistenceFailed)
+                        ? "bg-muted text-muted-foreground opacity-50 cursor-not-allowed"
+                        : "bg-primary text-primary-foreground hover:bg-primary/90 hover:shadow-md"
+                    )}
                   >
-                    <ArrowRight className="h-4 w-4" /> Next Word
+                    <ArrowRight className="h-4 w-4" />
+                    {submitting ? "Analyzing..." : persistingAttempt ? "Saving..." : "Next Word"}
                   </button>
                 </motion.div>
               )
@@ -1600,7 +2114,7 @@ export default function Index() {
         open={!!pendingConflict}
         activeMode={pendingConflict?.activeMode ?? null}
         requestedMode={pendingConflict?.requestedMode ?? null}
-        loading={conflictLoading}
+        loadingState={conflictLoading}
         error={conflictError}
         onResume={handleConflictResume}
         onStartNew={handleConflictStartNew}

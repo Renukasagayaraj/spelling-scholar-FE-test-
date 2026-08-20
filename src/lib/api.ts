@@ -1,11 +1,26 @@
-import { getAccessToken } from "@/lib/supabase";
+import { getAccessToken, supabase } from "@/lib/supabase";
 import { mockNextWord, mockCoaching, mockPronunciationAudio } from "@/lib/mocks";
+import type {
+  ReportPagination,
+  ReportSection,
+  ReportSessionWord,
+  ReportsMock,
+} from "@/lib/reportsMock";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
-// When no backend URL is configured (preview/local without API server),
-// fall back to mocks so the full UI — pronunciation, coaching feedback —
-// is exercisable. Set VITE_API_BASE_URL to disable.
+// Some non-coaching APIs retain preview/local mocks when no backend URL is
+// configured. Streaming coaching always surfaces connection failures.
 const USE_MOCK_FALLBACK = !BASE_URL;
+const GUEST_TOKEN_STORAGE_KEY = "spelling_coach_guest_token";
+
+export interface GuestUsage {
+  guestToken: string;
+  attemptsUsed: number;
+  attemptsRemaining: number;
+  limit: number;
+}
+
+let guestStartPromise: Promise<GuestUsage> | null = null;
 
 export class UnauthorizedError extends Error {
   constructor(message = "Unauthorized") {
@@ -14,9 +29,123 @@ export class UnauthorizedError extends Error {
   }
 }
 
-async function authHeaders(): Promise<Record<string, string>> {
+export class FreeAttemptLimitError extends Error {
+  constructor(message = "Free attempt limit reached") {
+    super(message);
+    this.name = "FreeAttemptLimitError";
+  }
+}
+
+export class InactivePracticeSessionError extends Error {
+  constructor(message = "This practice session is no longer active") {
+    super(message);
+    this.name = "InactivePracticeSessionError";
+  }
+}
+
+export async function authHeaders(): Promise<Record<string, string>> {
   const token = await getAccessToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function storedGuestToken(): string | null {
+  return typeof window === "undefined"
+    ? null
+    : window.localStorage.getItem(GUEST_TOKEN_STORAGE_KEY);
+}
+
+function saveGuestToken(token: string): void {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(GUEST_TOKEN_STORAGE_KEY, token);
+  }
+}
+
+function clearGuestToken(): void {
+  if (typeof window !== "undefined") {
+    window.localStorage.removeItem(GUEST_TOKEN_STORAGE_KEY);
+  }
+}
+
+async function requestGuestStart(token?: string): Promise<GuestUsage> {
+  const res = await fetch(`${BASE_URL}/api/guests/start`, {
+    method: "POST",
+    headers: token ? { "x-guest-token": token } : {},
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const error = new Error(body.error || "Failed to start guest access");
+    (error as Error & { code?: string }).code = body.code;
+    throw error;
+  }
+  const usage = await res.json() as GuestUsage;
+  saveGuestToken(usage.guestToken);
+  return usage;
+}
+
+export async function startGuestAccess(): Promise<GuestUsage> {
+  if (guestStartPromise) return guestStartPromise;
+  guestStartPromise = (async () => {
+    const existingToken = storedGuestToken();
+    try {
+      return await requestGuestStart(existingToken || undefined);
+    } catch (error) {
+      const code = (error as Error & { code?: string }).code;
+      if (existingToken && code === "INVALID_GUEST_TOKEN") {
+        clearGuestToken();
+        return requestGuestStart();
+      }
+      throw error;
+    }
+  })();
+  try {
+    return await guestStartPromise;
+  } finally {
+    guestStartPromise = null;
+  }
+}
+
+async function practiceAccessHeaders(): Promise<Record<string, string>> {
+  const authenticated = await authHeaders();
+  if (authenticated.Authorization) return authenticated;
+  const existingToken = storedGuestToken();
+  const token = existingToken || (await startGuestAccess()).guestToken;
+  return { "x-guest-token": token };
+}
+
+export async function fetchGuestUsage(): Promise<GuestUsage> {
+  return startGuestAccess();
+}
+
+export async function claimGuestPractice(): Promise<number> {
+  const token = storedGuestToken();
+  if (!token) return 0;
+  const authenticated = await authHeaders();
+  if (!authenticated.Authorization) return 0;
+  const res = await fetch(`${BASE_URL}/api/guests/claim`, {
+    method: "POST",
+    headers: {
+      ...authenticated,
+      "x-guest-token": token,
+    },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    if (body.code === "GUEST_LINKED_TO_DIFFERENT_ACCOUNT") {
+      clearGuestToken();
+      return 0;
+    }
+    throw new Error(body.error || "Failed to transfer guest practice");
+  }
+  const result = await res.json();
+  return result.transferredAttempts || 0;
+}
+
+async function handle401(): Promise<never> {
+  const { data } = await supabase.auth.getSession();
+  if (data?.session) {
+    await supabase.auth.signOut({ scope: "local" });
+  }
+  throw new UnauthorizedError();
 }
 
 export interface MorphemeGloss {
@@ -37,6 +166,9 @@ export interface WordData {
   partOfSpeech: string;
   pronunciation: string;
   patterns: string[];
+  /** Returned by the backend when a sessionId was passed to /api/words/next.
+   *  Must be sent back in pronunciation and submission requests in place of word. */
+  challengeId?: string;
 }
 
 export interface SupportsUsed {
@@ -45,6 +177,33 @@ export interface SupportsUsed {
   originViewed: boolean;
   partOfSpeechViewed?: boolean;
 }
+
+export type SpellingCoachStreamSection =
+  | "short_feedback"
+  | "miss_analysis"
+  | "explanation"
+  | "memory_tip";
+
+export type SpellingCoachRuntimeSectionStatus =
+  | "idle"
+  | "streaming"
+  | "complete"
+  | "error";
+
+export interface SpellingCoachRuntimeSectionState {
+  status: SpellingCoachRuntimeSectionStatus;
+  text: string;
+  timingMs: number;
+  error: {
+    code: string;
+    message: string;
+  } | null;
+}
+
+export type SpellingCoachRuntimeSections = Record<
+  SpellingCoachStreamSection,
+  SpellingCoachRuntimeSectionState
+>;
 
 export interface ChildProfile {
   childId: string;
@@ -57,20 +216,21 @@ export interface SessionContext {
   mode: string;
   previousAttemptsOnThisWord: number;
   previousMissPatterns: string[];
-  recentlyPracticedWords: string[];
 }
 
 export interface CoachingRequest {
-  targetWord: string;
+  targetWord?: string;
+  challengeId?: string;
   childAttempt: string;
-  childProfile: ChildProfile;
-  supportsUsed: SupportsUsed;
-  sessionContext: SessionContext;
-  definition?: string;
-  exampleSentence?: string;
-  origin?: string;
-  partOfSpeech?: string;
   level?: number;
+  mode: string;
+  definitionViewed: boolean;
+  exampleViewed: boolean;
+  originViewed: boolean;
+  partOfSpeechViewed: boolean;
+  repeatWordCount: number;
+  usedVoiceInput: boolean;
+  sessionId?: string;
 }
 
 export interface CoachingResponse {
@@ -143,6 +303,72 @@ export interface CoachingResponse {
     shouldReviewSoon: boolean;
     suggestedSimilarWordTypes: string[];
   };
+  streamSections?: SpellingCoachRuntimeSections;
+}
+
+export interface SpellingCoachStreamMeta {
+  requestId: string;
+  isCorrect: boolean;
+  timingMs: number;
+  targetWordMasked: boolean;
+  targetWord?: string;
+  sayAloudTip?: string;
+  shortFeedback?: string;
+  missAnalysis?: CoachingResponse["missAnalysis"];
+}
+
+export interface SpellingCoachStreamError {
+  section: SpellingCoachStreamSection;
+  error: {
+    code: string;
+    message: string;
+  };
+  timingMs: number;
+}
+
+export interface SpellingCoachSectionEvent {
+  section: SpellingCoachStreamSection;
+  timingMs: number;
+}
+
+export interface SpellingCoachSectionChunkEvent extends SpellingCoachSectionEvent {
+  text: string;
+}
+
+export interface SpellingCoachStreamDone {
+  complete: true;
+  /** The resolved target word, revealed by the backend after evaluation. */
+  targetWord?: string;
+  timings: {
+    metaMs: number;
+    precomputedMs: number;
+    runtimeCoachingMs: number;
+    totalMs: number;
+  };
+}
+
+export interface SpellingCoachStreamHandlers {
+  signal?: AbortSignal;
+  onMeta?: (meta: SpellingCoachStreamMeta, result: CoachingResponse) => void;
+  onPrecomputed?: (result: CoachingResponse) => void;
+  onSectionStart?: (
+    event: SpellingCoachSectionEvent,
+    result: CoachingResponse,
+  ) => void;
+  onSectionChunk?: (
+    event: SpellingCoachSectionChunkEvent,
+    result: CoachingResponse,
+  ) => void;
+  onSectionComplete?: (
+    event: SpellingCoachSectionEvent,
+    result: CoachingResponse,
+  ) => void;
+  onSection?: (
+    section: SpellingCoachStreamSection,
+    result: CoachingResponse,
+  ) => void;
+  onSectionError?: (error: SpellingCoachStreamError) => void;
+  onDone?: (result: CoachingResponse, done: SpellingCoachStreamDone) => void;
 }
 
 export async function checkHealth(): Promise<{ status: string }> {
@@ -169,6 +395,20 @@ export interface ImportCustomListResponse {
   importedCount: number;
   skippedExistingCount: number;
 }
+
+export interface FileImportStartResponse {
+  status: "processing_in_background";
+  jobId: string;
+  listId?: string;
+  listName: string;
+  detectedWords: number;
+  filename: string;
+}
+
+export type FileImportJobResponse =
+  | { status: "processing"; filename: string; detectedWords: number; startedAt: number }
+  | { status: "done"; result: ImportCustomListResponse; completedAt: number }
+  | { status: "failed"; error: string; completedAt: number };
 
 export interface CustomListsResponse {
   lists: CustomListSummary[];
@@ -201,7 +441,8 @@ export interface NextWordParams {
   level?: number;
   customListId?: string;
   foreignOrigin?: string;
-  exclude?: string[];
+  /** Pass the active sessionId to enable secure challengeId-based word tracking. */
+  sessionId?: string;
 }
 
 export async function fetchNextWord(
@@ -223,18 +464,18 @@ export async function fetchNextWord(
   } else if (opts.level != null) {
     params.set("level", String(opts.level));
   }
-  if (opts.exclude && opts.exclude.length > 0) {
-    params.set("exclude", opts.exclude.join(","));
+  if (opts.sessionId) {
+    params.set("sessionId", opts.sessionId);
   }
-  // Custom list practice requires auth; level/foreignOrigin are public.
-  const headers = opts.customListId ? await authHeaders() : {};
+  // Custom list practice or session-linked requests require auth.
+  const headers = (opts.customListId || opts.sessionId) ? await authHeaders() : {};
   try {
     const res = await fetch(`${BASE_URL}/api/words/next?${params}`, { headers });
     if (res.status === 401) throw new UnauthorizedError();
     if (!res.ok) throw new Error("Failed to fetch word");
     return await res.json();
   } catch (err) {
-    if (USE_MOCK_FALLBACK && !(err instanceof UnauthorizedError)) {
+    if (USE_MOCK_FALLBACK && err instanceof TypeError) {
       return mockNextWord(opts);
     }
     throw err;
@@ -315,31 +556,621 @@ export async function importCustomWordList(payload: ImportCustomListRequest): Pr
   return res.json();
 }
 
-export async function fetchPronunciationAudio(word: string): Promise<string> {
+async function responseError(res: Response, fallback: string): Promise<Error> {
+  const data = await res.json().catch(() => null) as { error?: unknown } | null;
+  return new Error(typeof data?.error === "string" && data.error.trim() ? data.error : fallback);
+}
+
+export async function importCustomWordFile(
+  file: File,
+  options: { pollIntervalMs?: number; maxPolls?: number; signal?: AbortSignal } = {},
+): Promise<ImportCustomListResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const upload = await fetch(`${BASE_URL}/api/words/import-file`, {
+    method: "POST",
+    headers: await authHeaders(),
+    body: formData,
+    signal: options.signal,
+  });
+  if (upload.status === 401) throw new UnauthorizedError();
+  if (!upload.ok) throw await responseError(upload, "File import could not be started.");
+
+  const started = await upload.json() as FileImportStartResponse;
+  if (!started.jobId) throw new Error("The server did not return an import job ID.");
+
+  const pollIntervalMs = options.pollIntervalMs ?? 500;
+  const maxPolls = options.maxPolls ?? 240;
+  for (let attempt = 0; attempt < maxPolls; attempt++) {
+    if (options.signal?.aborted) {
+      throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
+    }
+    const status = await fetch(
+      `${BASE_URL}/api/words/import-jobs/${encodeURIComponent(started.jobId)}`,
+      { headers: await authHeaders(), signal: options.signal },
+    );
+    if (status.status === 401) throw new UnauthorizedError();
+    if (!status.ok) throw await responseError(status, "Could not check the file import status.");
+
+    const job = await status.json() as FileImportJobResponse;
+    if (job.status === "done") {
+      invalidateCustomListsCache();
+      return job.result;
+    }
+    if (job.status === "failed") throw new Error(job.error || "File import failed.");
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, pollIntervalMs);
+      options.signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(options.signal!.reason ?? new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+    });
+  }
+
+  throw new Error("The file import is taking longer than expected. Please try again.");
+}
+
+export async function fetchPronunciationAudio(
+  params: { challengeId: string; sessionId: string },
+): Promise<string> {
   try {
-    const res = await fetch(`${BASE_URL}/api/words/${encodeURIComponent(word)}/pronunciation`);
+    const urlParams = new URLSearchParams({
+      challengeId: params.challengeId,
+      sessionId: params.sessionId,
+    });
+    const url = `${BASE_URL}/api/words/pronunciation?${urlParams}`;
+    const res = await fetch(url, { headers: await authHeaders() });
+    if (res.status === 401) await handle401();
     if (!res.ok) throw new Error("Failed to fetch pronunciation");
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   } catch (err) {
-    if (USE_MOCK_FALLBACK) return mockPronunciationAudio(word);
+    if (USE_MOCK_FALLBACK && err instanceof TypeError) return mockPronunciationAudio(params.challengeId);
     throw err;
   }
 }
 
-export async function submitSpellingAttempt(body: CoachingRequest): Promise<CoachingResponse> {
-  try {
-    const res = await fetch(`${BASE_URL}/api/spelling-coach`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error("Failed to submit attempt");
-    return await res.json();
-  } catch (err) {
-    if (USE_MOCK_FALLBACK) return mockCoaching(body);
-    throw err;
+
+type ParsedSseEvent = {
+  event: string;
+  data: unknown;
+};
+
+const STREAM_SECTION_KEYS: SpellingCoachStreamSection[] = [
+  "short_feedback",
+  "miss_analysis",
+  "explanation",
+  "memory_tip",
+];
+
+function emptyRuntimeSections(isCorrect = false): SpellingCoachRuntimeSections {
+  const status: SpellingCoachRuntimeSectionStatus = isCorrect ? "complete" : "idle";
+  return STREAM_SECTION_KEYS.reduce((sections, section) => {
+    sections[section] = {
+      status,
+      text: "",
+      timingMs: 0,
+      error: null,
+    };
+    return sections;
+  }, {} as SpellingCoachRuntimeSections);
+}
+
+function emptyCoachingResponse(isCorrect: boolean): CoachingResponse {
+  return {
+    correctness: {
+      isCorrect,
+      reinforceSuccess: isCorrect,
+    },
+    missAnalysis: {
+      summary: "",
+      primaryErrorType: null,
+      secondaryErrorTypes: [],
+      errorTypeEvidence: {},
+      primaryErrorFocus: "",
+      likelyWrongWordInterpretation: false,
+      usedMeaningDisambiguationWell: false,
+    },
+    wordTeaching: {
+      formTeaching: {
+        summary: "",
+        patterns: [],
+        chunks: [],
+        chunkReason: "",
+        sayAloudFocus: "",
+      },
+      conceptTeaching: {
+        summary: "",
+        meaningFocus: "",
+        originFocus: "",
+        morphologyFocus: "",
+        originLabels: [],
+        morphologyLabels: [],
+        relatedForms: [],
+      },
+    },
+    errorRelevance: {
+      mostRelevantToError: "unclear",
+      confidence: 0,
+      reason: "",
+    },
+    teachingDecision: {
+      strategy: "mixed",
+      primaryFocus: "",
+      secondaryFocuses: [],
+      confidence: 0,
+      rationale: "",
+    },
+    coachingText: {
+      shortFeedback: "",
+      fullExplanation: "",
+      memoryTip: "",
+      sayAloudTip: "",
+    },
+    wordBreakdown: {
+      displayChunks: [],
+      chunkReason: "",
+      matchedPatterns: [],
+    },
+    conceptLabels: {
+      originLabels: [],
+      patternLabels: [],
+      morphologyLabels: [],
+    },
+    nextStep: {
+      practiceFocus: "",
+      shouldReviewSoon: false,
+      suggestedSimilarWordTypes: [],
+    },
+    streamSections: emptyRuntimeSections(isCorrect),
+  };
+}
+
+function parseSseBlock(block: string): ParsedSseEvent | null {
+  let event = "message";
+  const dataLines: string[] = [];
+
+  for (const line of block.split(/\r?\n/)) {
+    if (!line || line.startsWith(":")) continue;
+    const separator = line.indexOf(":");
+    const field = separator === -1 ? line : line.slice(0, separator);
+    let value = separator === -1 ? "" : line.slice(separator + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+
+    if (field === "event") event = value;
+    if (field === "data") dataLines.push(value);
   }
+
+  if (dataLines.length === 0) return null;
+  return {
+    event,
+    data: JSON.parse(dataLines.join("\n")),
+  };
+}
+
+async function consumeSseResponse(
+  response: Response,
+  onEvent: (event: ParsedSseEvent) => boolean,
+): Promise<void> {
+  if (!response.body) {
+    throw new Error("Streaming response body is unavailable.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let terminalEventReceived = false;
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+
+      let boundary = buffer.search(/\r?\n\r?\n/);
+      while (boundary !== -1) {
+        const block = buffer.slice(0, boundary);
+        const delimiter = buffer.slice(boundary).match(/^\r?\n\r?\n/)?.[0] ?? "\n\n";
+        buffer = buffer.slice(boundary + delimiter.length);
+        const parsed = parseSseBlock(block);
+        if (parsed && onEvent(parsed)) {
+          terminalEventReceived = true;
+          break;
+        }
+        boundary = buffer.search(/\r?\n\r?\n/);
+      }
+
+      if (terminalEventReceived) {
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+      if (done) break;
+    }
+
+    if (!terminalEventReceived && buffer.trim()) {
+      const parsed = parseSseBlock(buffer.trim());
+      if (parsed) onEvent(parsed);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function createStreamAssembler(handlers: SpellingCoachStreamHandlers) {
+  let result: CoachingResponse | null = null;
+  let done = false;
+
+  const requireResult = (eventName: string): CoachingResponse => {
+    if (!result) throw new Error(`Received ${eventName} before meta.`);
+    if (!result.streamSections) {
+      result = { ...result, streamSections: emptyRuntimeSections() };
+    }
+    return result;
+  };
+
+  const setSectionState = (
+    section: SpellingCoachStreamSection,
+    patch: Partial<SpellingCoachRuntimeSectionState>,
+  ) => {
+    const current = requireResult("section event");
+    const previous = current.streamSections?.[section] ?? emptyRuntimeSections()[section];
+    result = {
+      ...current,
+      streamSections: {
+        ...current.streamSections!,
+        [section]: {
+          ...previous,
+          ...patch,
+        },
+      },
+    };
+  };
+
+  const applySectionText = (
+    section: SpellingCoachStreamSection,
+    text: string,
+  ) => {
+    const current = requireResult("section text");
+    switch (section) {
+      case "short_feedback":
+        result = {
+          ...current,
+          coachingText: {
+            ...current.coachingText,
+            shortFeedback: text,
+          },
+        };
+        break;
+      case "miss_analysis":
+        result = {
+          ...current,
+          missAnalysis: {
+            ...current.missAnalysis,
+            summary: text,
+          },
+        };
+        break;
+      case "explanation":
+        result = {
+          ...current,
+          coachingText: {
+            ...current.coachingText,
+            fullExplanation: text,
+          },
+        };
+        break;
+      case "memory_tip":
+        result = {
+          ...current,
+          coachingText: {
+            ...current.coachingText,
+            memoryTip: text,
+          },
+        };
+        break;
+    }
+  };
+
+  const handleEvent = ({ event, data }: ParsedSseEvent): boolean => {
+    if (event === "meta") {
+      const meta = data as SpellingCoachStreamMeta;
+      result = emptyCoachingResponse(meta.isCorrect);
+      if (meta.missAnalysis) {
+        result = {
+          ...result,
+          missAnalysis: meta.missAnalysis,
+        };
+      }
+      const metaExtra = meta as Record<string, unknown>;
+      if (meta.sayAloudTip || metaExtra["shortFeedback"]) {
+        result = {
+          ...result,
+          coachingText: {
+            ...result.coachingText,
+            ...(meta.sayAloudTip ? { sayAloudTip: meta.sayAloudTip } : {}),
+            ...(metaExtra["shortFeedback"] ? { shortFeedback: metaExtra["shortFeedback"] as string } : {}),
+          },
+        };
+      }
+      handlers.onMeta?.(meta, result);
+      return false;
+    }
+
+    if (event === "precomputed") {
+      if (!result) throw new Error("Received precomputed before meta.");
+      const payload = (data as {
+        payload: {
+          wordTeaching?: Partial<CoachingResponse["wordTeaching"]>;
+          wordBreakdown?: CoachingResponse["wordBreakdown"];
+          conceptLabels?: CoachingResponse["conceptLabels"];
+        };
+      }).payload;
+      result = {
+        ...result,
+        wordTeaching: payload.wordTeaching
+          ? { ...result.wordTeaching, ...payload.wordTeaching }
+          : result.wordTeaching,
+        wordBreakdown: payload.wordBreakdown ?? result.wordBreakdown,
+        conceptLabels: payload.conceptLabels ?? result.conceptLabels,
+      };
+      handlers.onPrecomputed?.(result);
+      return false;
+    }
+
+    if (event === "section-start") {
+      const sectionEvent = data as SpellingCoachSectionEvent;
+      setSectionState(sectionEvent.section, {
+        status: "streaming",
+        timingMs: sectionEvent.timingMs,
+        error: null,
+      });
+      handlers.onSectionStart?.(sectionEvent, result!);
+      handlers.onSection?.(sectionEvent.section, result!);
+      return false;
+    }
+
+    if (event === "section-chunk") {
+      const chunkEvent = data as SpellingCoachSectionChunkEvent;
+      const current = requireResult("section-chunk");
+      const previousText =
+        current.streamSections?.[chunkEvent.section]?.text ?? "";
+      const nextText = previousText + chunkEvent.text;
+      setSectionState(chunkEvent.section, {
+        status: "streaming",
+        text: nextText,
+        timingMs: chunkEvent.timingMs,
+        error: null,
+      });
+      applySectionText(chunkEvent.section, nextText);
+      handlers.onSectionChunk?.(chunkEvent, result!);
+      handlers.onSection?.(chunkEvent.section, result!);
+      return false;
+    }
+
+    if (event === "section-complete") {
+      const sectionEvent = data as SpellingCoachSectionEvent;
+      const current = requireResult("section-complete");
+      setSectionState(sectionEvent.section, {
+        status:
+          current.streamSections?.[sectionEvent.section]?.status === "error"
+            ? "error"
+            : "complete",
+        timingMs: sectionEvent.timingMs,
+      });
+      handlers.onSectionComplete?.(sectionEvent, result!);
+      handlers.onSection?.(sectionEvent.section, result!);
+      return false;
+    }
+
+    if (event === "section") {
+      if (!result) throw new Error("Received section before meta.");
+      const sectionEvent = data as {
+        section: SpellingCoachStreamSection;
+        payload: Record<string, unknown>;
+        timingMs?: number;
+      };
+      switch (sectionEvent.section) {
+        case "miss_analysis": {
+          const payload = sectionEvent.payload as {
+            missAnalysis?: CoachingResponse["missAnalysis"];
+            errorRelevance?: CoachingResponse["errorRelevance"];
+            teachingDecision?: CoachingResponse["teachingDecision"];
+          };
+          result = {
+            ...result,
+            missAnalysis: payload.missAnalysis ?? result.missAnalysis,
+            errorRelevance: payload.errorRelevance ?? result.errorRelevance,
+            teachingDecision:
+              payload.teachingDecision ?? result.teachingDecision,
+          };
+          setSectionState(sectionEvent.section, {
+            status: "complete",
+            text: result.missAnalysis.summary,
+            timingMs: sectionEvent.timingMs ?? 0,
+          });
+          break;
+        }
+        case "explanation": {
+          const payload = sectionEvent.payload as {
+            shortFeedback?: string;
+            fullExplanation?: string;
+            sayAloudTip?: string;
+          };
+          result = {
+            ...result,
+            coachingText: {
+              ...result.coachingText,
+              shortFeedback:
+                payload.shortFeedback ?? result.coachingText.shortFeedback,
+              fullExplanation:
+                payload.fullExplanation ?? result.coachingText.fullExplanation,
+              sayAloudTip:
+                payload.sayAloudTip ?? result.coachingText.sayAloudTip,
+            },
+          };
+          setSectionState(sectionEvent.section, {
+            status: "complete",
+            text: result.coachingText.fullExplanation,
+            timingMs: sectionEvent.timingMs ?? 0,
+          });
+          break;
+        }
+        case "memory_tip": {
+          const payload = sectionEvent.payload as { memoryTip?: string };
+          result = {
+            ...result,
+            coachingText: {
+              ...result.coachingText,
+              memoryTip: payload.memoryTip ?? result.coachingText.memoryTip,
+            },
+          };
+          setSectionState(sectionEvent.section, {
+            status: "complete",
+            text: result.coachingText.memoryTip,
+            timingMs: sectionEvent.timingMs ?? 0,
+          });
+          break;
+        }
+      }
+      handlers.onSection?.(sectionEvent.section, result);
+      return false;
+    }
+
+    if (event === "section-error") {
+      const errorEvent = data as SpellingCoachStreamError;
+      setSectionState(errorEvent.section, {
+        status: "error",
+        timingMs: errorEvent.timingMs,
+        error: errorEvent.error,
+      });
+      handlers.onSectionError?.(errorEvent);
+      if (result) handlers.onSection?.(errorEvent.section, result);
+      return false;
+    }
+
+    if (event === "done") {
+      if (!result) throw new Error("Received done before meta.");
+      done = true;
+      if (result.streamSections) {
+        for (const key of STREAM_SECTION_KEYS) {
+          const sec = result.streamSections[key];
+          if (sec && (sec.status === "idle" || sec.status === "streaming")) {
+            setSectionState(key, {
+              status: "complete",
+            });
+          }
+        }
+      }
+      handlers.onDone?.(result, data as SpellingCoachStreamDone);
+      return true;
+    }
+    return false;
+  };
+
+  return {
+    handleEvent,
+    finish(): CoachingResponse {
+      if (!done || !result) {
+        throw new Error("Spelling coach stream ended before done.");
+      }
+      return result;
+    },
+  };
+}
+
+export async function submitSpellingAttempt(
+  body: CoachingRequest,
+  handlers: SpellingCoachStreamHandlers = {},
+): Promise<CoachingResponse> {
+  const assembler = createStreamAssembler(handlers);
+  const res = await fetch(`${BASE_URL}/api/spelling-coach/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(await practiceAccessHeaders()),
+    },
+    body: JSON.stringify(body),
+    signal: handlers.signal,
+  });
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => ({}));
+    if (res.status === 402) {
+      throw new FreeAttemptLimitError(errorBody.error);
+    }
+    throw new Error(errorBody.error || "Failed to submit attempt");
+  }
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("text/event-stream")) {
+    throw new Error("Expected a text/event-stream response.");
+  }
+  await consumeSseResponse(res, assembler.handleEvent);
+  return assembler.finish();
+}
+
+export interface PersistedAttemptResult {
+  attemptId: string;
+  session: PracticeSessionRecord | null;
+  sessionRefreshError?: Error;
+}
+
+export interface SubmitAndRecordResult {
+  coaching: CoachingResponse;
+  persistence: Promise<PersistedAttemptResult>;
+}
+
+export interface SubmitAndRecordOptions {
+  waitForPreviousPersistence?: Promise<unknown>;
+  onAttemptSaved?: (attemptId: string) => void;
+}
+
+export async function submitAndRecordSpellingAttempt(
+  coachingRequest: CoachingRequest,
+  attempt: Omit<RecordAttemptBody, "isCorrect" | "coachingResponse">,
+  handlers: SpellingCoachStreamHandlers = {},
+  options: SubmitAndRecordOptions = {},
+): Promise<SubmitAndRecordResult> {
+  let meta: SpellingCoachStreamMeta | undefined;
+  let done: SpellingCoachStreamDone | undefined;
+
+  const coaching = await submitSpellingAttempt(coachingRequest, {
+    ...handlers,
+    onMeta: (event, partial) => {
+      meta = event;
+      handlers.onMeta?.(event, partial);
+    },
+    onDone: (finalResult, event) => {
+      done = event;
+      handlers.onDone?.(finalResult, event);
+    },
+  });
+
+  const coachingResponse = JSON.stringify({
+    ...coaching,
+    streamMetadata: { meta, done },
+  });
+  const persist = async (): Promise<PersistedAttemptResult> => {
+    await options.waitForPreviousPersistence;
+    const attemptId = await recordWordAttempt({
+      ...attempt,
+      targetWord: done?.targetWord || attempt.targetWord,
+      isCorrect: coaching.correctness.isCorrect,
+      coachingResponse,
+    });
+    options.onAttemptSaved?.(attemptId);
+    let session: PracticeSessionRecord | null = null;
+    let sessionRefreshError: Error | undefined;
+    try {
+      session = await fetchPracticeSession(attempt.sessionId);
+    } catch (error) {
+      sessionRefreshError =
+        error instanceof Error ? error : new Error("Failed to refresh practice session");
+    }
+    return { attemptId, session, sessionRefreshError };
+  };
+  const persistence = persist();
+
+  return { coaching, persistence };
 }
 
 export interface SubscriptionStatus {
@@ -352,44 +1183,67 @@ export interface SubscriptionStatus {
 }
 
 export async function fetchSubscriptionStatus(): Promise<SubscriptionStatus> {
-  const res = await fetch(`${BASE_URL}/api/stripe/subscription-status`, {
-    headers: await authHeaders(),
-  });
-  if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new Error("Failed to fetch subscription status");
-  return res.json();
+  try {
+    const res = await fetch(`${BASE_URL}/api/stripe/subscription-status`, {
+      headers: await authHeaders(),
+    });
+    if (res.status === 401) throw new UnauthorizedError();
+    if (!res.ok) throw new Error("Failed to fetch subscription status");
+    return res.json();
+  } catch (err) {
+    if (USE_MOCK_FALLBACK && err instanceof TypeError) {
+      const isSub = localStorage.getItem("mock_subscribed") === "true";
+      return { subscribed: isSub, cancelAtPeriodEnd: false };
+    }
+    throw err;
+  }
 }
 
 export async function createStripeCheckoutSession(): Promise<{ url: string }> {
-  const res = await fetch(`${BASE_URL}/api/stripe/create-checkout-session`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(await authHeaders()),
-    },
-  });
-  if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.error || "Failed to create checkout session");
+  try {
+    const res = await fetch(`${BASE_URL}/api/stripe/create-checkout-session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(await authHeaders()),
+      },
+    });
+    if (res.status === 401) throw new UnauthorizedError();
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || "Failed to create checkout session");
+    }
+    return res.json();
+  } catch (err) {
+    if (USE_MOCK_FALLBACK && err instanceof TypeError) {
+      localStorage.setItem("mock_subscribed", "true");
+      return { url: `${window.location.origin}/?payment_success=true` };
+    }
+    throw err;
   }
-  return res.json();
 }
 
 export async function createStripePortalSession(): Promise<{ url: string }> {
-  const res = await fetch(`${BASE_URL}/api/stripe/create-portal-session`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(await authHeaders()),
-    },
-  });
-  if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.error || "Failed to create portal session");
+  try {
+    const res = await fetch(`${BASE_URL}/api/stripe/create-portal-session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(await authHeaders()),
+      },
+    });
+    if (res.status === 401) throw new UnauthorizedError();
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || "Failed to create portal session");
+    }
+    return res.json();
+  } catch (err) {
+    if (USE_MOCK_FALLBACK && err instanceof TypeError) {
+      return { url: window.location.origin };
+    }
+    throw err;
   }
-  return res.json();
 }
 
 export interface UserProfile {
@@ -402,6 +1256,7 @@ export interface UserProfile {
   age: number | null;
   grade: string | null;
   spelling_level: string | null;
+  weekly_email_enabled: boolean;
 }
 
 export async function fetchUserProfile(): Promise<UserProfile> {
@@ -418,6 +1273,7 @@ export async function fetchUserProfile(): Promise<UserProfile> {
       age: 10,
       grade: "5",
       spelling_level: "competition",
+      weekly_email_enabled: false,
     };
     localStorage.setItem("mock_user_profile", JSON.stringify(mock));
     return mock;
@@ -454,24 +1310,27 @@ export async function updateUserProfile(updates: Partial<Omit<UserProfile, "id" 
 
 export interface PracticeSessionRecord {
   id: string;
-  user_id: string;
+  user_id?: string;
   mode: string;
   status?: "active" | "completed" | "abandoned";
   origin_language?: string | null;
   custom_list_id?: string | null;
+  custom_list_name?: string | null;
   session_started_at: string;
   session_ended_at: string | null;
   total_words_attempted?: number;
   total_correct?: number;
   accuracy_percentage?: number;
   duration_seconds?: number | null;
-  created_at: string;
+  created_at?: string;
+  session_config?: unknown;
+  session_state?: unknown;
 }
 
 export interface WordAttemptRecord {
   id: string;
   session_id: string;
-  user_id: string;
+  user_id?: string | null;
   target_word: string;
   child_attempt: string;
   is_correct: boolean;
@@ -486,14 +1345,8 @@ export interface WordAttemptRecord {
 }
 
 export type StartPracticeSessionResult =
-  | {
-      action: "created";
-      sessionId: string;
-    }
-  | {
-      action: "resume_existing";
-      sessionId: string;
-    }
+  | { action: "created"; sessionId: string }
+  | { action: "resume_existing"; sessionId: string }
   | {
       action: "active_session_conflict";
       activeSessionId: string;
@@ -505,6 +1358,7 @@ export interface StartPracticeSessionRequest {
   level?: number;
   originLanguage?: string;
   customListId?: string;
+  // customListName?: string;
   forceCloseCurrent?: boolean;
 }
 
@@ -515,12 +1369,16 @@ export async function startPracticeSession(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(await authHeaders()),
+      ...(await practiceAccessHeaders()),
     },
     body: JSON.stringify(body),
   });
   if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new Error("Failed to start practice session");
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 402) throw new FreeAttemptLimitError(body.error);
+    throw new Error(body.error || "Failed to start practice session");
+  }
   return res.json();
 }
 
@@ -529,15 +1387,15 @@ export interface RecordAttemptBody {
   targetWord: string;
   childAttempt: string;
   isCorrect: boolean;
-  level?: number;
-  mode?: string;
-  definitionViewed?: boolean;
-  exampleViewed?: boolean;
-  originViewed?: boolean;
-  partOfSpeechViewed?: boolean;
-  repeatWordCount?: number;
-  usedVoiceInput?: boolean;
-  coachingResponse?: string;
+  level: number;
+  mode: string;
+  definitionViewed: boolean;
+  exampleViewed: boolean;
+  originViewed: boolean;
+  partOfSpeechViewed: boolean;
+  repeatWordCount: number;
+  usedVoiceInput: boolean;
+  coachingResponse: string;
 }
 
 export async function recordWordAttempt(body: RecordAttemptBody): Promise<string> {
@@ -545,12 +1403,19 @@ export async function recordWordAttempt(body: RecordAttemptBody): Promise<string
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(await authHeaders()),
+      ...(await practiceAccessHeaders()),
     },
     body: JSON.stringify(body),
   });
-  if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new Error("Failed to record word attempt");
+  if (res.status === 401) await handle401();
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 402) throw new FreeAttemptLimitError(data.error);
+    if (res.status === 409 && data.code === "PRACTICE_SESSION_NOT_ACTIVE") {
+      throw new InactivePracticeSessionError(data.error);
+    }
+    throw new Error(data.error || "Failed to record word attempt");
+  }
   const data = await res.json();
   return data.attemptId;
 }
@@ -562,18 +1427,38 @@ export interface EndSessionBody {
   durationSeconds: number;
 }
 
-export async function endPracticeSession(body: EndSessionBody, keepAlive?: boolean): Promise<void> {
+export type EndSessionResult =
+  | "completed"
+  | "already_abandoned"
+  | "already_completed";
+
+export async function endPracticeSession(
+  body: EndSessionBody,
+  keepalive = false,
+): Promise<EndSessionResult> {
   const res = await fetch(`${BASE_URL}/api/sessions/end`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(await authHeaders()),
+      ...(await practiceAccessHeaders()),
     },
     body: JSON.stringify(body),
-    keepalive: keepAlive,
+    keepalive,
   });
-  if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new Error("Failed to end practice session");
+  if (res.status === 401) await handle401();
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to end practice session");
+  }
+  const data = await res.json();
+  if (
+    data.result !== "completed" &&
+    data.result !== "already_abandoned" &&
+    data.result !== "already_completed"
+  ) {
+    throw new Error("Invalid end practice session response");
+  }
+  return data.result;
 }
 
 export interface DbUserStats {
@@ -588,6 +1473,9 @@ export interface DbUserStats {
 }
 
 export async function fetchUserStatistics(): Promise<DbUserStats[]> {
+  if (USE_MOCK_FALLBACK) {
+    return [];
+  }
   const res = await fetch(`${BASE_URL}/api/users/stats`, {
     headers: await authHeaders(),
   });
@@ -600,7 +1488,7 @@ export async function fetchUserStatistics(): Promise<DbUserStats[]> {
 export interface DbWordAttempt {
   id: string;
   session_id: string;
-  user_id: string;
+  user_id?: string | null;
   target_word: string;
   child_attempt: string;
   is_correct: boolean;
@@ -611,32 +1499,63 @@ export interface DbWordAttempt {
   part_of_speech_viewed?: boolean;
   repeat_word_count?: number;
   used_voice_input?: boolean;
+  coaching_response?: CoachingResponse | string | null;
   created_at: string;
   word_catalog_entry?: Partial<WordData> | null;
+}
+
+export type ReportDateRange = "7d" | "30d" | "90d" | "all";
+
+export type ReportSectionResponse<Section extends ReportSection> =
+  Pick<ReportsMock, Section> & { pagination?: ReportPagination };
+
+export async function fetchReports<Section extends ReportSection>(
+  range: ReportDateRange,
+  section: Section,
+  page = 1,
+): Promise<ReportSectionResponse<Section>> {
+  const params = new URLSearchParams({
+    range,
+    section,
+    page: String(page),
+    pageSize: "10",
+    locale: navigator.language || "en-US",
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+  });
+  const res = await fetch(`${BASE_URL}/api/reports?${params}`, {
+    headers: await authHeaders(),
+  });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok) throw new Error("Failed to fetch report data");
+  return res.json();
 }
 
 export async function fetchSessionAttempts(sessionId: string): Promise<DbWordAttempt[]> {
   if (USE_MOCK_FALLBACK) {
     return [];
   }
-  const res = await fetch(`${BASE_URL}/api/sessions/attempts?sessionId=${encodeURIComponent(sessionId)}`, {
-    headers: await authHeaders(),
-  });
-  if (res.status === 401) throw new UnauthorizedError();
+  const res = await fetch(
+    `${BASE_URL}/api/sessions/attempts?sessionId=${encodeURIComponent(sessionId)}`,
+    { headers: await practiceAccessHeaders() },
+  );
+  if (res.status === 401) await handle401();
   if (!res.ok) throw new Error("Failed to fetch session attempts");
   const data = await res.json();
   return data.attempts;
 }
 
-export async function fetchPracticeSession(sessionId: string): Promise<PracticeSessionRecord | null> {
+export async function fetchPracticeSession(
+  sessionId: string,
+): Promise<PracticeSessionRecord | null> {
   if (USE_MOCK_FALLBACK) {
     return null;
   }
-  const res = await fetch(`${BASE_URL}/api/sessions/current?sessionId=${encodeURIComponent(sessionId)}`, {
-    headers: await authHeaders(),
-  });
-  if (res.status === 401) throw new UnauthorizedError();
-  if (!res.ok) throw new Error("Failed to fetch practice session");
+  const res = await fetch(
+    `${BASE_URL}/api/sessions/current?sessionId=${encodeURIComponent(sessionId)}`,
+    { headers: await practiceAccessHeaders() },
+  );
+  if (res.status === 401) await handle401();
+  if (!res.ok) throw new Error("Failed to refresh practice session");
   const data = await res.json();
   return data.session;
 }
@@ -722,6 +1641,19 @@ export async function searchWords(
   const res = await fetch(`${BASE_URL}/api/words/search?${params}`);
   if (!res.ok) throw new Error("Failed to search words");
   return res.json();
+}
+
+export async function fetchReportSessionDetails(
+  sessionId: string,
+): Promise<ReportSessionWord[]> {
+  const params = new URLSearchParams({ sessionId });
+  const res = await fetch(`${BASE_URL}/api/reports/session-details?${params}`, {
+    headers: await authHeaders(),
+  });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok) throw new Error("Failed to fetch session details");
+  const data = await res.json();
+  return data.words;
 }
 
 export async function fetchWordDetail(word: string): Promise<WordDetail> {
